@@ -22,6 +22,14 @@ public sealed record MissingDevice(string Direction, string FriendlyName, string
 public sealed record ResolvedSlot(string? DeviceId);
 
 /// <summary>
+/// One row in <see cref="PresetStore.ListWithMetadata"/>. <see cref="EditedAt"/>
+/// always carries a value (= the file's <c>SavedAt</c>); <see cref="CreatedAt"/>
+/// falls back to <see cref="EditedAt"/> for legacy presets that predate the
+/// dedicated created-at field.
+/// </summary>
+public sealed record PresetMetadata(string Name, DateTimeOffset CreatedAt, DateTimeOffset EditedAt);
+
+/// <summary>
 /// Outcome of a <see cref="PresetStore.Apply"/> call: the (possibly partial)
 /// next <see cref="MixerState"/>, slot layout for the FE to apply, and any
 /// preset entries that did not match a live device. The caller publishes
@@ -87,6 +95,41 @@ public sealed class PresetStore
     }
 
     /// <summary>
+    /// Same set as <see cref="List"/>, enriched with creation and edit
+    /// timestamps so the FE can render and sort the preset list. Presets that
+    /// fail to parse are skipped (a warning is logged); presets that lack a
+    /// <c>createdAt</c> on disk (legacy v1 files) report <c>createdAt = savedAt</c>.
+    /// Sorted alphabetically — the FE re-sorts as needed.
+    /// </summary>
+    public IReadOnlyList<PresetMetadata> ListWithMetadata()
+    {
+        if (!System.IO.Directory.Exists(_directory)) return Array.Empty<PresetMetadata>();
+
+        var files = System.IO.Directory.GetFiles(_directory, "*.json");
+        var rows  = new List<PresetMetadata>(files.Length);
+        foreach (var path in files)
+        {
+            var name = Path.GetFileNameWithoutExtension(path);
+            if (string.IsNullOrEmpty(name)) continue;
+
+            try
+            {
+                var preset = JsonSerializer.Deserialize(File.ReadAllText(path), PresetJsonContext.Default.Preset);
+                if (preset is null) continue;
+                var edited  = preset.SavedAt;
+                var created = preset.CreatedAt ?? preset.SavedAt;
+                rows.Add(new PresetMetadata(name, created, edited));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Skipping unreadable preset file {Path}", path);
+            }
+        }
+        rows.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        return rows;
+    }
+
+    /// <summary>
     /// Capture the current <see cref="MixerState"/> + the FE-supplied slot
     /// layout as a <see cref="Preset"/>. Endpoint <see cref="AudioEndpoint.InterfaceName"/>
     /// is looked up from <paramref name="endpoints"/> by the channel id (the
@@ -114,31 +157,99 @@ public sealed class PresetStore
             matrix[i] = row;
         }
 
+        var now = DateTimeOffset.UtcNow;
         return new Preset(
             SchemaVersion: Preset.CurrentSchemaVersion,
             Name:          name,
-            SavedAt:       DateTimeOffset.UtcNow,
+            SavedAt:       now,
             Inputs:        inputs,
             Outputs:       outputs,
             Matrix:        matrix,
             InputSlots:    inputSlots  ?? Array.Empty<PresetSlot>(),
-            OutputSlots:   outputSlots ?? Array.Empty<PresetSlot>());
+            OutputSlots:   outputSlots ?? Array.Empty<PresetSlot>(),
+            CreatedAt:     now);
     }
 
-    /// <summary>Save (or overwrite) <paramref name="preset"/> under <paramref name="name"/>.</summary>
+    /// <summary>
+    /// Save (or overwrite) <paramref name="preset"/> under <paramref name="name"/>.
+    /// On overwrite the existing file's <see cref="Preset.CreatedAt"/> is preserved
+    /// so "created" reflects the original save, not the latest edit. A corrupt
+    /// existing file is treated as missing.
+    /// </summary>
     public void Save(string name, Preset preset)
     {
         EnsureValidName(name);
         System.IO.Directory.CreateDirectory(_directory);
         var path = ResolvePath(name);
 
-        var json = JsonSerializer.Serialize(preset, PresetJsonContext.Default.Preset);
+        var toSave = preset with { CreatedAt = ResolveCreatedAt(path, preset) };
+
+        var json = JsonSerializer.Serialize(toSave, PresetJsonContext.Default.Preset);
         // Atomic write so a crash mid-save can't leave a half-written file.
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, json);
         File.Move(tmp, path, overwrite: true);
 
         _logger.LogInformation("Saved preset '{Name}' to {Path}", name, path);
+    }
+
+    /// <summary>
+    /// Rename a preset on disk. Updates the file name, the <c>Name</c> field
+    /// inside the JSON, and the "last preset" pointer if it referenced the old
+    /// name. <see cref="Preset.CreatedAt"/> and <see cref="Preset.SavedAt"/>
+    /// are preserved — renaming isn't an edit. Throws when the source is
+    /// missing or the target already exists.
+    /// </summary>
+    public void Rename(string oldName, string newName)
+    {
+        EnsureValidName(oldName);
+        EnsureValidName(newName);
+        if (string.Equals(oldName, newName, StringComparison.Ordinal)) return;
+
+        var oldPath = ResolvePath(oldName);
+        var newPath = ResolvePath(newName);
+        if (!File.Exists(oldPath))
+            throw new FileNotFoundException($"Preset '{oldName}' not found.", oldPath);
+        if (File.Exists(newPath))
+            throw new IOException($"A preset named '{newName}' already exists.");
+
+        var preset = Load(oldName);
+        var renamed = preset with { Name = newName };
+
+        var json = JsonSerializer.Serialize(renamed, PresetJsonContext.Default.Preset);
+        var tmp  = newPath + ".tmp";
+        File.WriteAllText(tmp, json);
+        File.Move(tmp, newPath, overwrite: false);
+        File.Delete(oldPath);
+
+        if (string.Equals(GetLastPresetName(), oldName, StringComparison.Ordinal))
+            SetLastPresetName(newName);
+
+        _logger.LogInformation("Renamed preset '{Old}' → '{New}'", oldName, newName);
+    }
+
+    /// <summary>
+    /// Resolve the <see cref="Preset.CreatedAt"/> to write: the existing
+    /// file's value if any (so overwrites preserve creation), the legacy
+    /// <see cref="Preset.SavedAt"/> for v1 files, or the in-memory preset's
+    /// own value (typically "now" from <see cref="Capture"/>).
+    /// </summary>
+    private DateTimeOffset ResolveCreatedAt(string path, Preset preset)
+    {
+        if (File.Exists(path))
+        {
+            try
+            {
+                var existing = JsonSerializer.Deserialize(File.ReadAllText(path), PresetJsonContext.Default.Preset);
+                if (existing is not null)
+                    return existing.CreatedAt ?? existing.SavedAt;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Existing preset at {Path} unreadable; treating overwrite as new", path);
+            }
+        }
+        return preset.CreatedAt ?? preset.SavedAt;
     }
 
     /// <summary>

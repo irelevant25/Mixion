@@ -25,7 +25,9 @@ FE/
     │       ├── core/
     │       │   ├── session.service.ts          # GET /api/session at app init; holds token + initial state
     │       │   ├── ipc.service.ts              # WS client, JSON-RPC, telemetry stream
-    │       │   └── mixer-state.store.ts        # signals-based store
+    │       │   ├── mixer-state.store.ts        # signals-based store
+    │       │   ├── current-preset.service.ts   # name of the preset the host is currently bound to
+    │       │   └── preset-actions.service.ts   # shared list/save/load/rename/delete/clearCurrent flow
     │       ├── features/
     │       │   ├── routing-matrix/
     │       │   │   ├── routing-matrix.component.ts
@@ -177,6 +179,10 @@ Each task is scoped to a single PR-sized unit. **Acceptance** says how to know i
 | FE-040 | `PresetManagerComponent`: list (from `listPresets`), load, save (with name input), delete | `features/preset-manager/*` | Full lifecycle works against the backend |
 | FE-041 | Confirm dialog for delete and overwrite (browser `confirm()` for v1; custom modal later if it gets ugly) | `preset-manager.component.ts` | Cannot accidentally clobber a preset |
 | FE-042 | Show device-mismatch warning when a loaded preset references a missing device | `preset-manager.component.ts` | Banner with the missing device's friendly name |
+| FE-043 | Centralise the preset RPC flow in `PresetActionsService` so both the shell header and the presets page share one save/load/rename/delete path; missing-device banner is a service-held signal | `core/preset-actions.service.ts` | Save from the header and Save from a hypothetical page entry point both update `currentPreset` and the slots store identically |
+| FE-044 | Shell header: "Current preset" row with **Save** and **Save As** buttons next to the name. Save writes to the bound name silently; with no current preset it falls through to the Save As prompt. Save As always prompts and confirms overwrites against the live `listPresets` result | `app.component.ts` | A user with a loaded preset can save changes in one click; from a blank slate Save still works (asks for a name once) |
+| FE-045 | Presets page redesigned as a list with `Name / Created / Edited / actions` columns and per-row Load, Rename, Delete. Default sort is `editedAt` desc | `features/preset-manager/preset-manager.component.ts` | Newest-edited preset appears at the top; Rename changes the on-disk file and updates the active-preset badge if it was bound |
+| FE-046 | "New" button on the presets page — when a preset is currently bound, prompts to save it first (silently, under the existing name) before calling `clearCurrentPreset`. Mixer state is **not** reset; only the binding is dropped so the next Save goes through Save As | `features/preset-manager/preset-manager.component.ts`, `core/preset-actions.service.ts` | Click New → "Save changes to '…'?" → yes → save without re-prompting → current preset shows "— none —" |
 
 ### M7 — Per-channel processing UI (gate / EQ / compressor / pan)
 
@@ -207,8 +213,9 @@ The tasks below are quality-of-life follow-ups for when the BE adds dynamic add/
 | FE-081 | Friendly-name strip: BE sends `"chrome (app)"`; FE strips the `(app)` suffix when the visual pill makes it redundant | `features/channel-strip/slot-config-dialog.component.ts` | Cleaner labels without losing the "this is a process" cue |
 | FE-084 | Refresh button in the slot-config dialog header. Calls `refreshDevices` RPC, then `MixerStateStore.replace()` with the returned state. Disabled + label flips to "Refreshing…" while in flight; surface RPC errors inline | `features/channel-strip/slot-config-dialog.component.ts`, `core/ipc.service.ts` | Apps started after the host launched (e.g. opening VLC) appear in the picker after a Refresh click without restarting the BE |
 | FE-085 | Render channels with `available === false` in red across the strip (border + name + "×" badge in header) and in the slot picker ("(no longer available)" annotation, red name). Filter unavailable channels out of the picker entirely if no slot binds to them — the spec is "channel strip stays put with red name; picker hides ghosts that no one is using" | `features/channel-strip/channel-strip.component.{html,css,ts}`, `features/channel-strip/slot-config-dialog.component.ts`, `core/mixer-state.store.ts` | Unplug the mic → the bound strip's name turns red, "×" badge appears, controls greyed; same device shows red in picker only as long as a slot still references it |
-| FE-082 *(after BE-105)* | "Add application" affordance: opens a sub-picker listing currently-audio-producing processes via a new `listAudioProcesses` RPC, calls `addProcessLoopback(processName)` to attach it. Replaces the brief audio gap of full-engine refresh with seamless attachment | `features/channel-strip/slot-config-dialog.component.ts`, `core/ipc.service.ts` | User can attach any audio app mid-session without the refresh ~200 ms silence |
-| FE-083 *(after BE-105)* | Show a "process gone" badge on a slot whose backing PID has exited (BE marks the channel dead via a new field on `ChannelDto`); offer "remove" or "reattach" actions | `features/channel-strip/channel-strip.component.ts` | Closing Chrome surfaces a red-dot indicator on the corresponding slot |
+| FE-086 | Per-row "×" detach button on process-loopback entries in the slot picker. Calls `removeProcessLoopback(channelId)`, hydrates store with returned state, unbinds local slots that were pointing at the removed id. Disabled while in flight; physical mics / virtual cables get no button (they're not removable) | `features/channel-strip/slot-config-dialog.component.ts` | Click "×" on Chrome → channel disappears, slot goes empty, no audio glitch outside the ~200 ms rebuild gap |
+| FE-082 *(after BE-110)* | "Add application" affordance using the existing `listAudioProcesses` RPC + an `addProcessLoopback` RPC that BE-110 unlocks (true atomic add). Lets the user attach an idle app that isn't currently producing audio without waiting for it to make sound and clicking Refresh | `features/channel-strip/slot-config-dialog.component.ts`, `core/ipc.service.ts` | User attaches any process by name; channel appears with no audio gap once BE-110 lands |
+| FE-083 | Show a "process gone" badge on a slot whose backing process loopback is currently `available === false` because the BE watchdog couldn't re-resolve it. Already covered for the basic "red border + × badge" case in FE-085; this would add a per-strip "Reattach" button that calls `refreshDevices` for an immediate retry instead of waiting for the next watchdog tick | `features/channel-strip/channel-strip.component.ts` | Strip with a missing process shows a "Reattach" button alongside the "×" badge |
 
 ### M8 — Polish
 

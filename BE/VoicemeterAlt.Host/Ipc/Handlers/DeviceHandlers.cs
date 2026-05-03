@@ -28,24 +28,15 @@ public static class DeviceHandlers
             });
         });
 
-        dispatcher.Register("refreshDevices", (_, _, _) =>
+        dispatcher.Register("refreshDevices", async (_, _, _) =>
         {
-            // Snapshot old engine + state, dispose, rebuild. The rebuild
-            // preserves channel ids and matrix positions for surviving
-            // channels; ones no longer enumerable end up with Available=false
-            // and a null backing source. Brief audio gap (~100-300 ms) while
-            // captures/renders re-open — acceptable cost for a user-driven
-            // refresh.
-            var previous = engineHost.Current?.SnapshotState();
-
-            var oldEngine = engineHost.Current;
-            engineHost.Set(null);
-            oldEngine?.Dispose();
-
-            var result = engineFactory.Build(previousState: previous);
-            engineHost.Set(result.Engine);
-
-            return Task.FromResult<object?>(result.InitialState.ToDto());
+            // Routes through EngineHost.RebuildAsync so a concurrent
+            // ProcessHealthMonitor auto-rebind can't race against us. The
+            // identity transform (no state edit) means we simply re-enumerate;
+            // EngineFactory preserves ids, marks gone channels Available=false,
+            // and appends new audio-producing apps.
+            var newState = await engineHost.RebuildAsync(engineFactory);
+            return (object?)newState.ToDto();
         });
     }
 }

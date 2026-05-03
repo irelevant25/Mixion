@@ -1,7 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!--
+      Matches the host project's TFM. The host moved to net8.0-windows when it
+      gained the system-tray UI (NotifyIcon, Registry); referencing it from a
+      bare net8.0 test project would emit NU1701 and a runtime mismatch warning.
+    -->
+    <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>

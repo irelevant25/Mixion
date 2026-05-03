@@ -22,12 +22,13 @@ BE/
 │   │   └── WebSocketEndpoint.cs      # GET /ws — upgrade, validate token, hand off to dispatcher
 │   ├── Audio/
 │   │   ├── DeviceEnumerator.cs       # WASAPI endpoint discovery
-│   │   ├── DriverProbe.cs            # detects VB-CABLE among WASAPI endpoints
+│   │   ├── DriverProbe.cs            # detects basic single-cable VB-CABLE among WASAPI endpoints
 │   │   ├── IAudioCaptureSource.cs    # common shape every input source feeds the engine through
 │   │   ├── CaptureDevice.cs          # WasapiCapture wrapper, format-converts to internal float mono
 │   │   ├── ProcessLoopbackCapture.cs # per-process loopback (Win10 20348+/Win11) — capture Chrome/Spotify/etc. directly
 │   │   ├── AudioProcessEnumerator.cs # walks IAudioSessionManager2 to list audio-producing processes
 │   │   ├── EngineFactory.cs          # builds a MixEngine from current device + process state; reused by startup AND runtime refresh
+│   │   ├── ProcessHealthMonitor.cs   # background watchdog: rebuilds engine when a tracked process loopback PID dies (auto-rebind by name)
 │   │   ├── RenderDevice.cs           # WasapiOut wrapper, reads from output ring buffer
 │   │   ├── MixEngine.cs              # the heart: read state, mix, write — capture/render arrays nullable to support missing-device slots
 │   │   ├── RoutingMatrix.cs          # bool[inputs, outputs] + solo/mute logic
@@ -44,6 +45,7 @@ BE/
 │   │   ├── TelemetryFrame.cs         # pack/unpack binary meter frames
 │   │   └── Handlers/
 │   │       ├── DeviceHandlers.cs
+│   │       ├── ProcessHandlers.cs    # listAudioProcesses + removeProcessLoopback (BE-105)
 │   │       ├── StateHandlers.cs
 │   │       ├── RoutingHandlers.cs
 │   │       ├── ChannelHandlers.cs
@@ -74,8 +76,9 @@ BE/
 
 ## Dependencies
 
-- **.NET 8 SDK** (target: `net8.0`, `<RuntimeIdentifier>win-x64</RuntimeIdentifier>` on publish)
+- **.NET 8 SDK** (target: `net8.0-windows` with `<UseWindowsForms>true</UseWindowsForms>`, `<RuntimeIdentifier>win-x64</RuntimeIdentifier>`)
 - **`Microsoft.AspNetCore.App`** framework reference — Kestrel, static files, WebSocket middleware, minimal API
+- **`Microsoft.WindowsDesktop.App`** framework reference — pulled in by `UseWindowsForms` for the system-tray UI (`NotifyIcon`, `Microsoft.Win32.Registry` for the Run-on-startup entry)
 - **`Microsoft.Extensions.FileProviders.Embedded`** — serves embedded Angular `wwwroot` from the assembly
 - **NAudio** (`NAudio.Wasapi`) — WASAPI capture/render
 - **`System.Text.Json`** (built-in) — preset & RPC serialization (use source-gen for AOT-friendliness)
@@ -86,13 +89,17 @@ BE/
 ```xml
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
     <AssemblyName>VoicemeterAlt</AssemblyName>
-    <OutputType>Exe</OutputType>
+    <!-- WinExe → no console flashes on double-click; the tray "Console"
+         menu item allocates / shows a hidden console on demand. -->
+    <OutputType>WinExe</OutputType>
+    <ApplicationIcon>wwwroot\favicon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="NAudio.Wasapi" Version="2.*" />
@@ -139,6 +146,38 @@ dotnet watch run -- --port 54812 --no-browser
 | `--port <N>` | Bind to a specific port instead of a random free one. Useful for bookmarking. |
 | `--no-browser` | Don't auto-open the default browser. |
 | `--no-driver-check` | Skip the VB-CABLE probe (development convenience; not exposed in packaged builds). |
+
+---
+
+## Engine rebuild coordination
+
+Every engine teardown/rebuild — user Refresh, `removeProcessLoopback`, or the auto-rebind watchdog — funnels through [`EngineHost.RebuildAsync`](VoicemeterAlt.Host/Ipc/EngineHost.cs). A `SemaphoreSlim` serialises concurrent calls so two rebuilds can't race for the same WASAPI endpoints. The method snapshots current state, optionally transforms it (e.g. drop a removed channel), disposes the running engine, calls `EngineFactory.Build(seed)`, then publishes the new engine atomically.
+
+Two flavours:
+
+- **Auto-discover ON** (default): `EngineFactory.Build` enumerates audio processes and appends any that aren't already in the seed state. This is what Refresh uses — apps started after the host launched show up.
+- **Auto-discover OFF**: orphan PLCs are opened-then-disposed (so we don't leak handles) and only seed-state channels survive. This is what `removeProcessLoopback` uses to keep the just-removed channel from immediately re-appearing via enumeration.
+
+## Per-process loopback management (BE-105)
+
+Beyond bulk Refresh, two targeted RPCs let the FE manage individual process loopbacks:
+
+| RPC | Purpose |
+|---|---|
+| `listAudioProcesses` | Read-only enumeration of currently-audio-producing processes. Returns `{processes: [{channelId, processId, processName, executablePath}]}`. The FE uses it to populate an "Add app" sub-picker without paying engine-rebuild cost just to peek at what's available. `channelId` matches the id format `process:<name>` so the FE can dedupe against `MixerState.Inputs`. |
+| `removeProcessLoopback` | Drop a single process-loopback channel from `MixerState` and rebuild the engine without re-discovering it (auto-discover OFF). Idempotent — calling with an unknown id returns the unchanged state. Returns the new `MixerStateDto`. |
+
+There is intentionally no dedicated `addProcessLoopback` — `refreshDevices` already opens loopbacks for every audio-producing process, including newly launched ones. A separate add RPC would do the same engine-rebuild work without adding value over the broader refresh, so we keep the API surface lean.
+
+**Caveat — there's still a brief audio gap (~200 ms)** during any rebuild while WASAPI re-opens. The "atomic capture-array swap" path described in the original BE-105 spec is BE-110 *(future)* — that requires per-channel state arrays sized to a max capacity at construction so add/remove can mutate without reallocation. The current implementation trades that complexity for a small gap that's acceptable for explicit user actions.
+
+## Auto-rebind on PID change (BE-106)
+
+[`ProcessHealthMonitor`](VoicemeterAlt.Host/Audio/ProcessHealthMonitor.cs) is an `IHostedService` that ticks every 3 seconds. It walks the active engine's captures, checks each `ProcessLoopbackCapture`'s PID against `Process.GetProcessById`, and if any has exited, calls `EngineHost.RebuildAsync` with no transform (auto-discover ON).
+
+Because `ProcessLoopbackCapture.Id` is `process:<name>` (not PID-bound), `EngineFactory.Build` resolves the channel against the new enumeration by name — Chrome closes and reopens, the new PID's PLC slots into the same channel id, and the user's slot binding survives unchanged. Total perceived delay: ~3 s of "channel red" before it goes green again. No user action required.
+
+The watchdog never crashes the host — exceptions in the loop log a warning and continue. The watchdog is a no-op when `EngineHost.Current` is null (engine not yet started or in the middle of a rebuild).
 
 ---
 
@@ -229,9 +268,9 @@ Tasks are scoped to be picked up one at a time. **Acceptance** says how to know 
 |---|---|---|---|
 | BE-001 | Init solution + ASP.NET Core web project, add NAudio + EmbeddedFileProvider packages | `VoicemeterAlt.Host.csproj`, `Program.cs` | `dotnet run` starts a `WebApplication`, prints "host alive", responds 200 to `/api/health` |
 | BE-002 | `DeviceEnumerator`: enumerate WASAPI capture & render endpoints, return DTOs with id, friendly name, interface, mix format | `Audio/DeviceEnumerator.cs` | Unit test: returns at least one device on the dev machine |
-| BE-003 | `DriverProbe`: scan endpoints, return `{ found, matchedDevice? }` based on case-insensitive friendly-name match against `"VB-Audio" \| "CABLE Input" \| "CABLE Output"` | `Audio/DriverProbe.cs`, `DriverProbeTests.cs` | Unit test with fake enumerator covers found / not-found / partial-name cases |
+| BE-003 | `DriverProbe`: scan endpoints, return `{ found, matchedDevice? }`. Friendly-name must **start with** `"CABLE Input"` or `"CABLE Output"` (case-insensitive, with a whitespace or `(` boundary) so only the basic single-cable VB-CABLE qualifies — VB-CABLE A+B (`CABLE-A Input`), C+D, and Voicemeeter VAIOs are explicitly rejected | `Audio/DriverProbe.cs`, `DriverProbeTests.cs` | Unit tests cover: basic render endpoint, basic capture endpoint, A+B/C+D rejected, Voicemeeter VAIOs rejected, basic-alongside-higher-tier accepted, empty/non-VB rejected, case-insensitive |
 | BE-004 | `Interop/MessageBox.cs`: P/Invoke `user32.dll!MessageBoxW` with `MB_OK \| MB_ICONERROR` | `Interop/MessageBox.cs` | Calling it shows a real Windows dialog |
-| BE-005 | `Program.cs` driver-miss path: if `DriverProbe.Found == false`, show the MessageBox with the install URL message and exit code 2 — **before** `WebApplication.Run()` | `Program.cs` | With VB-CABLE uninstalled, app shows the dialog and exits without binding any port |
+| BE-005 | `Program.cs` driver-miss path: if `DriverProbe.Found == false`, show the MessageBox with the install URL message and exit code 2 — **before** `WebApplication.Run()`. Message names the basic VB-CABLE explicitly so users on A+B/C+D/Voicemeeter understand what's missing | `Program.cs` | With basic VB-CABLE uninstalled (even if A+B/C+D is present), app shows the dialog and exits without binding any port |
 | BE-006 | Bind Kestrel to `127.0.0.1` on a random free port; log the chosen URL | `Web/HttpServer.cs` | Two consecutive runs land on different ports; `netstat -an` confirms 127.0.0.1-only |
 | BE-007 | Static-file middleware backed by `ManifestEmbeddedFileProvider`; SPA fallback to `/index.html` for unknown paths | `Web/StaticFiles.cs` | A placeholder `wwwroot/index.html` is served at `/`; navigating to `/foo/bar` also returns it |
 | BE-008 | `GET /api/session` endpoint: returns `{ token: <new random hex>, mixerStateInit: <stub> }` and stores token in an in-memory set keyed by issue time | `Web/SessionEndpoint.cs` | Two consecutive GETs produce two distinct tokens; both are accepted by `/ws` |
@@ -294,6 +333,10 @@ Tasks are scoped to be picked up one at a time. **Acceptance** says how to know 
 | BE-061 | `PresetStore`: list, save, load, delete in `%LOCALAPPDATA%\VoicemeterAlt\presets\*.json` | `State/PresetStore.cs` | RPC-driven save creates a file; load returns its contents |
 | BE-062 | Device re-resolution on load: presets store endpoint friendly name + interface name; find best match; warn on missing | `State/PresetStore.cs` | Unplugging a device and loading preset returns a structured warning, not an exception |
 | BE-063 | RPCs: `listPresets()`, `savePreset(name)`, `loadPreset(name)`, `deletePreset(name)` | `Ipc/Handlers/PresetHandlers.cs` | UI can drive full preset lifecycle |
+| BE-064 | Add `createdAt` to the preset DTO (nullable for legacy v1 files) and preserve it across overwrites; `savedAt` continues to track the last edit | `State/Preset.cs`, `State/PresetStore.cs` | Saving an existing preset bumps `savedAt` but leaves `createdAt` anchored to the original save |
+| BE-065 | `listPresets` returns metadata rows `{name, createdAt, editedAt}` instead of raw names so the FE can render and sort the list by edited-at | `Ipc/Handlers/PresetHandlers.cs`, `State/PresetStore.cs` | RPC response carries timestamps for every preset; legacy presets without `createdAt` fall back to `savedAt` |
+| BE-066 | `renamePreset(oldName, newName)` RPC — moves the file, rewrites the in-JSON `name`, retargets the last-preset pointer and `CurrentPresetState` if needed; rejects when target exists | `Ipc/Handlers/PresetHandlers.cs`, `State/PresetStore.cs` | Renaming an active preset updates the on-disk file and the FE's "current preset" badge in one call |
+| BE-067 | `clearCurrentPreset` RPC — clears `CurrentPresetState` and the persisted last-preset pointer without touching mixer state, so the FE "New" button can detach without a reload | `Ipc/Handlers/PresetHandlers.cs` | Calling it leaves the engine running unchanged but a subsequent host restart no longer auto-loads the previously bound preset |
 
 ### M7 — Per-channel processing (gate / EQ / compressor / pan)
 
@@ -326,8 +369,9 @@ Per-process WASAPI loopback so the user can route Chrome / Spotify / OBS / a gam
 | BE-107 | `refreshDevices` RPC: re-enumerate devices + audio-producing processes, rebuild the engine via `EngineFactory.Build(previousState)`. Channel ids preserved, missing channels kept with `Available = false`, new ones appended. Routing matrix grows with `false`. Returns updated `MixerStateDto` | `Ipc/Handlers/DeviceHandlers.cs`, `Audio/EngineFactory.cs` | UI Refresh button → VLC started after host launch shows up; unplugged mic stays in state, marked unavailable |
 | BE-108 | `Channel.Available` flag (defaults `true`). Engine accepts nullable `IAudioCaptureSource?[]` / `RenderDevice?[]` and treats null slots as silent input / discard output. Sample-rate validation skips null slots | `State/MixerState.cs`, `Audio/MixEngine.cs`, `Ipc/StateDto.cs` | A slot whose device disappeared still has its gain/mute/EQ/route preserved; mix loop runs at the same allocation cost |
 | BE-109 | Stable process-loopback ids: switch from `process:<pid>:<name>` to `process:<name>` so a Chrome close/reopen keeps the same channel id. Dedupe at enumeration time when multiple PIDs share a name | `Audio/ProcessLoopbackCapture.cs`, `Audio/EngineFactory.cs` | Slot bound to "chrome" survives a Chrome restart through one Refresh click |
-| BE-105 *(future)* | RPC `addProcessLoopback(processName)` / `removeProcessLoopback(channelId)` for dynamic add/remove without the engine-rebuild gap. Atomic capture-array swap | `Ipc/Handlers/ProcessHandlers.cs`, `Audio/MixEngine.cs` | UI can attach a process mid-session without the brief refresh silence |
-| BE-106 *(future)* | Auto-rebind on PID change: when a `ProcessLoopbackCapture` errors out (process gone), re-resolve by name and re-open with the new PID transparently — no Refresh click needed | `Audio/ProcessLoopbackCapture.cs` | Closing and reopening Chrome doesn't require any user action |
+| BE-105 | `listAudioProcesses` + `removeProcessLoopback` RPCs in a new `ProcessHandlers.cs`. Both go through `EngineHost.RebuildAsync` with auto-discover off for remove, so the just-removed channel doesn't re-appear via enumeration. `addProcessLoopback` deliberately omitted — refresh already covers it | `Ipc/Handlers/ProcessHandlers.cs`, `Ipc/EngineHost.cs`, `Audio/EngineFactory.cs` | FE picker shows currently-audio-producing apps; "×" detach button on process channels removes them and the channel is gone after rebuild |
+| BE-106 | `ProcessHealthMonitor` IHostedService polls every 3 s; on a dead PID, calls `EngineHost.RebuildAsync` (auto-discover on) so `EngineFactory` re-resolves the channel id `process:<name>` against the new PID. Channel + slot binding survive across the restart | `Audio/ProcessHealthMonitor.cs`, `Program.cs` | Close Chrome, reopen Chrome — within ~3-5 s the channel is back to green, slot binding intact, no Refresh click |
+| BE-110 *(future)* | True atomic capture-array swap: pre-allocate per-channel state arrays at construction to a max capacity, support add/remove via single-element writes + `MixerState` swap. Eliminates the ~200 ms WASAPI re-open gap on every rebuild | `Audio/MixEngine.cs`, `Ipc/EngineHost.cs` | Refresh / add / remove cause no audible silence; only physical-device hot-plug needs full re-open |
 
 ### M8 — Polish
 
@@ -371,6 +415,12 @@ All control over JSON-RPC 2.0 on `/ws`. Telemetry over binary frames on the same
 // presets
 → {"jsonrpc":"2.0","id":8,"method":"savePreset","params":{"name":"streaming"}}
 → {"jsonrpc":"2.0","id":9,"method":"loadPreset","params":{"name":"streaming"}}
+→ {"jsonrpc":"2.0","id":16,"method":"listPresets"}
+← {"jsonrpc":"2.0","id":16,"result":{"presets":[
+    {"name":"streaming","createdAt":"2024-01-01T12:00:00Z","editedAt":"2024-02-15T09:30:00Z"}
+  ]}}
+→ {"jsonrpc":"2.0","id":17,"method":"renamePreset","params":{"oldName":"streaming","newName":"podcast"}}
+→ {"jsonrpc":"2.0","id":18,"method":"clearCurrentPreset"}    // detach the host's "current preset" pointer (FE "New" button)
 
 // per-channel processing (M7)
 → {"jsonrpc":"2.0","id":10,"method":"setPan","params":{"channel":1,"pan":-0.3}}

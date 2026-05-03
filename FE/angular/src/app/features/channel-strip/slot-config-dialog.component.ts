@@ -12,6 +12,7 @@ import {
 import { ChannelBus, MixerStateDto, MixerStateStore } from '../../core/mixer-state.store';
 import { IpcError, IpcService } from '../../core/ipc.service';
 import { slotLabel, SlotsStore } from '../../core/slots.store';
+import { DeviceIconComponent } from './device-icon.component';
 
 /**
  * Per-slot configuration dialog: pick which BE device drives this slot,
@@ -36,10 +37,11 @@ import { slotLabel, SlotsStore } from '../../core/slots.store';
 @Component({
   selector: 'app-slot-config-dialog',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [DeviceIconComponent],
   template: `
     <dialog #dlg (close)="onNativeClose()" class="slot-dlg">
       <header>
-        <h2>Slot {{ letter() }}</h2>
+        <h2>{{ headingText() }}</h2>
         <span class="header-actions">
           <button
             type="button"
@@ -79,11 +81,23 @@ import { slotLabel, SlotsStore } from '../../core/slots.store';
                 [checked]="selectedDeviceId() === d.id"
                 [disabled]="isUsedElsewhere(d.id)"
                 (change)="onSelect(d.id)" />
-              <span class="name" [title]="d.id">{{ d.name }}</span>
+              <app-device-icon class="row-icon" [bus]="bus()" [channelId]="d.id" />
+              <span class="name" [title]="d.name">{{ d.name }}</span>
               @if (!d.available) {
                 <span class="status missing-tag">(no longer available)</span>
               } @else if (isUsedElsewhere(d.id)) {
                 <span class="status used">used in slot {{ usedInLetter(d.id) }}</span>
+              }
+              @if (isProcessChannel(d.id)) {
+                <button
+                  type="button"
+                  class="row-action"
+                  (click)="$event.preventDefault(); $event.stopPropagation(); onRemoveProcess(d.id)"
+                  [disabled]="removingId() === d.id"
+                  [attr.aria-label]="'Detach ' + d.name + ' from the mixer'"
+                  title="Detach this app — frees its loopback. The app keeps playing audio normally to its own output device.">
+                  {{ removingId() === d.id ? '…' : '×' }}
+                </button>
               }
             </label>
           </li>
@@ -141,6 +155,8 @@ import { slotLabel, SlotsStore } from '../../core/slots.store';
       }
       .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
       .name.dim { color: #888; font-style: italic; }
+      .row-icon { color: #9aa5b1; }
+      .devices li.missing .row-icon { color: #f06b6b; }
 
       /* Missing devices: red name, italic annotation. Disabled radio so
          the user can't bind a fresh slot to a known-broken device, but
@@ -152,6 +168,23 @@ import { slotLabel, SlotsStore } from '../../core/slots.store';
         color: #888;
       }
       .status.missing-tag { color: #f06b6b; }
+
+      /* Per-row "×" detach button (process loopbacks only). Doesn't trigger
+         the radio — uses preventDefault/stopPropagation in the click handler. */
+      .row-action {
+        background: transparent;
+        border: 1px solid #3a3a3a;
+        color: #aaa;
+        width: 1.4rem;
+        height: 1.4rem;
+        line-height: 1;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 13px;
+        flex: 0 0 auto;
+      }
+      .row-action:hover:not(:disabled) { background: #3a1f1f; border-color: #6a3030; color: #f7c8c8; }
+      .row-action:disabled { opacity: 0.4; cursor: progress; }
 
       .empty { color: #888; font-style: italic; padding: 1rem; text-align: center; }
       footer {
@@ -179,8 +212,27 @@ export class SlotConfigDialogComponent {
   readonly slotId = input.required<string>();
   readonly letter = input.required<string>();
 
+  /**
+   * Dialog heading. Outputs use Voicemeeter-style hardware-bus labels
+   * (<c>Slot A1</c>); inputs are identified by friendly name on the strip,
+   * so the dialog just says "Input slot" without a numeric prefix.
+   */
+  protected readonly headingText = computed(() =>
+    this.bus() === 'output' ? `Slot ${this.letter()}` : 'Input slot',
+  );
+
   protected readonly refreshing  = signal(false);
   protected readonly refreshError = signal<string | null>(null);
+  protected readonly removingId   = signal<string | null>(null);
+
+  /**
+   * True when the channel id encodes a per-process loopback. Only those get
+   * a "×" detach button — physical mics / virtual cables stay regardless of
+   * whether they're bound to a slot.
+   */
+  protected isProcessChannel(channelId: string): boolean {
+    return channelId.startsWith('process:');
+  }
 
   /** All BE channels for this bus, including ones marked unavailable. */
   private readonly allDevices = computed(() =>
@@ -238,6 +290,31 @@ export class SlotConfigDialogComponent {
 
   protected onNativeClose(): void {
     /* no-op; close handler available for future hooks */
+  }
+
+  /**
+   * Detach a process loopback. The BE drops the channel from MixerState
+   * and rebuilds the engine without re-discovering it (so the just-removed
+   * process doesn't sneak back in). Local slot bindings to the dropped id
+   * are unbound on this side — the channel is gone, the slot would render
+   * "Not assigned" anyway.
+   */
+  protected async onRemoveProcess(channelId: string): Promise<void> {
+    if (this.removingId() !== null) return;
+    this.removingId.set(channelId);
+    this.refreshError.set(null);
+    try {
+      const next = await this.ipc.call<MixerStateDto>('removeProcessLoopback', { channelId });
+      this.mixer.replace(next);
+      // Unbind any slots that were pointing at this id (in either bus, just
+      // in case) so they show as empty rather than ghost-bound.
+      for (const slot of this.slots.inputs())  if (slot.deviceId === channelId) this.slots.assignDevice('input',  slot.id, null);
+      for (const slot of this.slots.outputs()) if (slot.deviceId === channelId) this.slots.assignDevice('output', slot.id, null);
+    } catch (err) {
+      this.refreshError.set(this.formatError(err));
+    } finally {
+      this.removingId.set(null);
+    }
   }
 
   /**

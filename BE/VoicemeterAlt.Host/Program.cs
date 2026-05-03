@@ -1,15 +1,20 @@
+using System.Windows.Forms;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using VoicemeterAlt.Host.Audio;
-using VoicemeterAlt.Host.Interop;
+using VoicemeterAlt.Host.Diagnostics;
 using VoicemeterAlt.Host.Ipc;
 using VoicemeterAlt.Host.Ipc.Handlers;
 using VoicemeterAlt.Host.Shell;
 using VoicemeterAlt.Host.State;
 using VoicemeterAlt.Host.Web;
+// Disambiguate from System.Windows.Forms.MessageBox now that the host links
+// against WinForms. The interop helper is the Win32 MessageBoxW we use for
+// the pre-server VB-CABLE dialog.
+using InteropMessageBox = VoicemeterAlt.Host.Interop.MessageBox;
 
 namespace VoicemeterAlt.Host;
 
@@ -17,30 +22,66 @@ internal static class Program
 {
     private const int ExitDriverMissing = 2;
 
-    public static async Task<int> Main(string[] args)
+    /// <summary>
+    /// STA entry — required because the system-tray UI runs on a WinForms
+    /// message pump. Async work (web host startup, audio engine, shutdown
+    /// drain) is offloaded to <see cref="Task.Run(Func{Task})"/> so this
+    /// thread is free to drive <see cref="Application.Run()"/>.
+    /// </summary>
+    [STAThread]
+    public static int Main(string[] args)
     {
+        ApplicationConfiguration.Initialize();
+
         var cli = CliArgs.Parse(args);
 
-        // 1. Driver presence check, BEFORE any HTTP/WS/audio work. If
-        //    VB-CABLE is missing the user gets a native dialog and we
-        //    exit cleanly — no port bound, no console window left over.
+        // Crash + diagnostic log first thing so any failure during startup
+        // (driver probe, mutex acquisition, Kestrel bind) lands on disk
+        // instead of vanishing with the console window. (BE-091)
+        CrashLog.Install();
+        CrashLog.Write("INFO", $"Host starting (pid {Environment.ProcessId})", null);
+
+        // Allocate (or borrow) a console BEFORE anything writes to stdout
+        // so the very first `Console.Write*` reaches the user. WinExe builds
+        // start with no console attached — without this, log output silently
+        // disappears.
+        ConsoleWindow.Initialize();
+
+        // Single-instance gate. If we are NOT the first instance the gate
+        // opens the existing host's URL in the browser and returns null —
+        // we exit cleanly, leaving the running host untouched. (BE-090)
+        using var instance = SingleInstanceGate.AcquireOrForward(cli.NoBrowser);
+        if (instance is null)
+        {
+            CrashLog.Write("INFO", "Another instance already owns the mutex; forwarding and exiting.", null);
+            return 0;
+        }
+
+        // Driver presence check, BEFORE any HTTP/WS/audio work. If
+        // VB-CABLE is missing the user gets a native dialog and we
+        // exit cleanly — no port bound, no console window left over.
         if (!cli.SkipDriverCheck)
         {
             var probe = DriverProbe.Probe(new DeviceEnumerator());
             if (!probe.Found)
             {
-                MessageBox.ShowError(
+                CrashLog.Write("WARN", "Basic VB-CABLE not detected; aborting startup.", null);
+                InteropMessageBox.ShowError(
                     caption: "VoicemeterAlt — VB-CABLE not found",
                     text:
-                        "VB-CABLE driver not detected.\n\n" +
-                        "VoicemeterAlt requires VB-CABLE to provide virtual audio endpoints.\n" +
-                        "Install it from https://vb-audio.com/Cable/ and relaunch the app.");
+                        "Basic VB-CABLE driver not detected.\n\n" +
+                        "VoicemeterAlt requires the basic single-cable VB-CABLE — the free download " +
+                        "labelled \"VB-CABLE Virtual Audio Device\" on vb-audio.com — which surfaces " +
+                        "exactly one \"CABLE Input\" and \"CABLE Output\" endpoint pair.\n\n" +
+                        "Higher-tier products (VB-CABLE A+B, VB-CABLE C+D, Voicemeeter) do not satisfy " +
+                        "this requirement on their own.\n\n" +
+                        "Install the basic VB-CABLE from https://vb-audio.com/Cable/ and relaunch the app.");
                 return ExitDriverMissing;
             }
         }
 
-        // 2. Build the web host. Same process serves /api/*, /ws, and the
-        //    embedded Angular bundle at /. Bound to 127.0.0.1 only.
+        // Build the web host. Same process serves /api/*, /ws, and the
+        // embedded Angular bundle at /. Bound to 127.0.0.1 only.
         var builder = WebApplication.CreateBuilder(args);
 
         builder.WebHost.ConfigureKestrel(k =>
@@ -52,6 +93,10 @@ internal static class Program
             o.SingleLine = true;
             o.TimestampFormat = "HH:mm:ss ";
         });
+        // Mirror Microsoft.Extensions.Logging output into the rotating
+        // crash log file so packaged builds (no console attached) still
+        // leave a forensic trail. (BE-091)
+        builder.Logging.AddProvider(new FileLoggerProvider());
 
         builder.Services.AddSingleton<SessionStore>();
         builder.Services.AddSingleton<EngineHost>();
@@ -61,6 +106,8 @@ internal static class Program
         builder.Services.AddSingleton<IEndpointSource, DeviceEnumerator>();
         builder.Services.AddSingleton(provider => new EngineFactory(
             provider.GetRequiredService<ILoggerFactory>().CreateLogger("MixEngine")));
+        // BE-106: watchdog rebinds process loopbacks when their PID dies.
+        builder.Services.AddHostedService<ProcessHealthMonitor>();
         builder.Services.AddSingleton<CurrentPresetState>();
         builder.Services.AddSingleton(provider => new PresetStore(
             PresetStore.DefaultDirectory(),
@@ -73,6 +120,10 @@ internal static class Program
             DeviceHandlers   .Register(
                 dispatcher,
                 provider.GetRequiredService<IEndpointSource>(),
+                provider.GetRequiredService<EngineHost>(),
+                provider.GetRequiredService<EngineFactory>());
+            ProcessHandlers  .Register(
+                dispatcher,
                 provider.GetRequiredService<EngineHost>(),
                 provider.GetRequiredService<EngineFactory>());
             StateHandlers    .Register(dispatcher, provider.GetRequiredService<EngineHost>());
@@ -89,6 +140,7 @@ internal static class Program
                 provider.GetRequiredService<PresetStore>(),
                 provider.GetRequiredService<CurrentPresetState>(),
                 provider.GetRequiredService<IEndpointSource>());
+            SystemHandlers   .Register(dispatcher);
             return dispatcher;
         });
 
@@ -98,12 +150,16 @@ internal static class Program
 
         app.MapHealth();
         app.MapSession();
+        app.MapProcessIcon();
         app.MapControlSocket();
 
         app.UseEmbeddedSpa();
 
-        // 3. Start, then read back the bound URL so we can log + open it.
-        await app.StartAsync();
+        // Start, then read back the bound URL so we can log + open it.
+        // The STA entry thread can't await directly without losing its
+        // STA semantics for the upcoming WinForms message pump, so we
+        // hand the awaitable to a worker and block here.
+        Task.Run(() => app.StartAsync()).GetAwaiter().GetResult();
 
         var url = HttpServer.ResolveBoundUrl(app.Services.GetRequiredService<IServer>());
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Host");
@@ -112,11 +168,14 @@ internal static class Program
         Console.WriteLine($"  VoicemeterAlt → {url}");
         Console.WriteLine();
 
-        // 4. Start the audio engine. Default mic → default output as a
-        //    walking-skeleton passthrough (BE-011). Failures here don't take
-        //    the host down — the UI can still talk to /api/*, the user just
-        //    won't hear audio. Useful when running on a CI box without an
-        //    audio device.
+        // Publish the URL so a second-instance launch can forward to it. (BE-090)
+        instance.PublishUrl(url);
+
+        // Start the audio engine. Default mic → default output as a
+        // walking-skeleton passthrough (BE-011). Failures here don't take
+        // the host down — the UI can still talk to /api/*, the user just
+        // won't hear audio. Useful when running on a CI box without an
+        // audio device.
         MixEngine? engine = null;
         var engineHost = app.Services.GetRequiredService<EngineHost>();
         try
@@ -153,10 +212,51 @@ internal static class Program
         if (!cli.NoBrowser)
             BrowserLauncher.Open(url);
 
-        await app.WaitForShutdownAsync();
+        // Graceful shutdown (BE-092). The .NET host already wires Ctrl+C →
+        // IHostApplicationLifetime; we hook ProcessExit too so an abnormal
+        // termination still gets a log entry and an explicit Console.CancelKeyPress
+        // handler so the trace shows the source of the shutdown signal.
+        var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            // Setting Cancel = true tells the runtime "I'll handle it" so
+            // the process doesn't get killed mid-flush. WaitForShutdownAsync
+            // returns once the lifetime is done draining. The tray context
+            // observes the same lifetime cancellation and drains the
+            // WinForms message loop, so this single signal stops both.
+            e.Cancel = true;
+            CrashLog.Write("INFO", "Ctrl+C received; initiating graceful shutdown.", null);
+            lifetime.StopApplication();
+        };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            CrashLog.Write("INFO", "Process exiting.", null);
 
+        // Tray UI runs on this STA thread. Application.Run blocks until the
+        // user picks tray Exit OR ApplicationStopping fires from elsewhere
+        // (Ctrl+C, OS log-off). The browser/audio/Kestrel are all live by
+        // the time we get here.
+        using (var trayContext = new TrayApplicationContext(url, lifetime))
+        {
+            Application.Run(trayContext);
+        }
+
+        // The message loop has drained. If shutdown was driven externally
+        // (Ctrl+C), lifetime is already stopping; otherwise the user clicked
+        // tray Exit and we kick the lifetime now to start the host drain.
+        if (!lifetime.ApplicationStopping.IsCancellationRequested)
+            lifetime.StopApplication();
+
+        Task.Run(() => app.WaitForShutdownAsync()).GetAwaiter().GetResult();
+
+        // Order matters per BE-092: Kestrel has stopped accepting new
+        // connections by the time WaitForShutdownAsync returns; now tear
+        // down the engine in render → mix → capture order so the last
+        // ~100 ms of audio drains cleanly. MixEngine.Stop() already does
+        // exactly that — render first, then the mix loop join, then capture.
+        logger.LogInformation("Shutdown: stopping audio engine.");
         engineHost.Set(null);
         engine?.Dispose();
+        CrashLog.Write("INFO", "Host stopped cleanly.", null);
         return 0;
     }
 

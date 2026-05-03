@@ -44,6 +44,14 @@ public sealed record PresetSlot(string? FriendlyName, string? InterfaceName);
 /// <see cref="System.Text.Json"/> source-gen (<see cref="PresetJsonContext"/>).
 /// Bumping <see cref="SchemaVersion"/> indicates a breaking change; older
 /// presets must be migrated or rejected on load.
+///
+/// <para>
+/// Timestamps: <see cref="SavedAt"/> is the "edited at" time — bumped on every
+/// save. <see cref="CreatedAt"/> is preserved across overwrites so the FE can
+/// show both creation and edit dates. <see cref="CreatedAt"/> is nullable for
+/// backward compatibility with v1 presets written before this field existed;
+/// callers reading old presets should fall back to <see cref="SavedAt"/>.
+/// </para>
 /// </summary>
 public sealed record Preset(
     int                    SchemaVersion,
@@ -53,7 +61,8 @@ public sealed record Preset(
     PresetChannel[]        Outputs,
     bool[][]               Matrix,
     PresetSlot[]           InputSlots,
-    PresetSlot[]           OutputSlots)
+    PresetSlot[]           OutputSlots,
+    DateTimeOffset?        CreatedAt = null)
 {
     public const int CurrentSchemaVersion = 1;
 }

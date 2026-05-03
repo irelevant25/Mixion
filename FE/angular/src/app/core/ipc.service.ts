@@ -136,6 +136,26 @@ export class IpcService {
    */
   private visibilityListener: (() => void) | null = null;
 
+  /**
+   * FE-060 — auto-reconnect plumbing. When enabled, a WS close that we did
+   * NOT initiate (i.e. the host restarted, the network blipped) schedules a
+   * reconnect with exponential backoff. The token provider re-fetches
+   * `/api/session` so we hand the WS endpoint a token the new host actually
+   * recognises; the post-connect callback gets a chance to re-hydrate the
+   * mixer state via `getState()` before the user notices anything.
+   */
+  private reconnect: {
+    tokenProvider: () => Promise<string>;
+    onReconnected:  () => Promise<void> | void;
+  } | null = null;
+  /** Backoff schedule in milliseconds — capped at 30 s indefinitely (FE-060). */
+  private static readonly ReconnectDelaysMs = [1000, 2000, 4000, 8000, 16000, 30000];
+  private reconnectAttempt   = 0;
+  private reconnectTimer:    ReturnType<typeof setTimeout> | null = null;
+  private reconnectInFlight = false;
+  /** Set when the caller explicitly disconnect()ed, to suppress backoff. */
+  private intentionalClose = false;
+
   constructor() {
     this.installVisibilityListener();
     inject(DestroyRef).onDestroy(() => this.removeVisibilityListener());
@@ -195,6 +215,7 @@ export class IpcService {
           this.meters.pairs.fill(0);
           this.meters.timestamp = performance.now();
         }
+        this.scheduleReconnectIfNeeded();
       });
 
       socket.addEventListener('message', (ev) => this.onMessage(ev));
@@ -202,9 +223,80 @@ export class IpcService {
   }
 
   disconnect(): void {
+    this.intentionalClose = true;
+    this.cancelReconnect();
     this.socket?.close();
     this.socket = null;
     this.status.set('disconnected');
+  }
+
+  /**
+   * Opt this service into auto-reconnect (FE-060). The token provider gets
+   * called on every reconnect attempt so a fresh `/api/session` round-trip
+   * picks up the new host's token (tokens don't survive a host restart).
+   * The `onReconnected` hook fires after the WS is back up — typical use is
+   * to call `getState()` and replace the mixer store so the UI is in sync
+   * with whatever the new host knows.
+   */
+  enableAutoReconnect(opts: {
+    tokenProvider: () => Promise<string>;
+    onReconnected: () => Promise<void> | void;
+  }): void {
+    this.reconnect = opts;
+  }
+
+  private scheduleReconnectIfNeeded(): void {
+    if (this.intentionalClose) {
+      this.intentionalClose = false;
+      return;
+    }
+    if (!this.reconnect) return;
+    if (this.reconnectTimer !== null || this.reconnectInFlight) return;
+
+    const delays = IpcService.ReconnectDelaysMs;
+    const delay  = delays[Math.min(this.reconnectAttempt, delays.length - 1)];
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.attemptReconnect();
+    }, delay);
+  }
+
+  private async attemptReconnect(): Promise<void> {
+    if (!this.reconnect) return;
+    if (this.reconnectInFlight) return;
+    this.reconnectInFlight = true;
+    this.reconnectAttempt++;
+
+    try {
+      const token = await this.reconnect.tokenProvider();
+      // Reset the socket reference so connect() doesn't short-circuit on
+      // the previous closed socket still being non-null.
+      this.socket = null;
+      await this.connect(token);
+      // Reset the backoff: next disconnect starts at 1 s again.
+      this.reconnectAttempt = 0;
+      try {
+        await this.reconnect.onReconnected();
+      } catch {
+        /* re-hydration is best-effort — banner already shows we're back */
+      }
+    } catch {
+      // Connection or token refresh failed — try again with the next
+      // backoff bucket. The schedule caps at 30 s so we don't sit idle
+      // forever, but we keep retrying as long as auto-reconnect is on.
+      this.scheduleReconnectIfNeeded();
+    } finally {
+      this.reconnectInFlight = false;
+    }
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempt = 0;
   }
 
   /**

@@ -27,7 +27,7 @@
 /* Header (slot letter + assigned device name; opens config dialog) */
 .header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.4rem;
   padding: 0.4rem 0.45rem;
   background: #1d1d1d;
@@ -37,6 +37,7 @@
   font: inherit;
   cursor: pointer;
   text-align: left;
+  min-height: calc(0.8rem + 2 * 1.25 * 11px);
 }
 .header:hover { border-color: #4a4a4a; }
 .strip.empty .header { background: #1a1a1a; border-style: dashed; }
@@ -56,14 +57,32 @@
 }
 .strip.empty .letter { background: #444; color: #aaa; }
 
+.device-icon {
+  color: #9aa5b1;
+  flex: 0 0 auto;
+}
+.strip.empty .device-icon { color: #555; }
+.strip.unavailable .device-icon { color: #f06b6b; }
+
+/* Two-line clamp by default — input strips lose their letter pill so the
+   icon + a long device/app name like "Headphones (Razer Kraken X USB)"
+   would otherwise truncate after about three characters. The min-height
+   keeps every header the same size whether the name is one line or two. */
 .name {
   flex: 1;
+  min-width: 0;
   font-weight: 500;
   font-size: 11px;
-  white-space: nowrap;
+  line-height: 1.25;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
+  min-height: calc(2 * 1.25 * 11px);
 }
 .strip.empty .name { color: #888; font-style: italic; }
 

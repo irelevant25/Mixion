@@ -21,6 +21,8 @@ public static class PresetHandlers
 {
     public sealed record NameParam(string Name);
 
+    public sealed record RenamePresetParams(string OldName, string NewName);
+
     /// <summary>
     /// FE-shaped slot in the savePreset request: just the live device id (or
     /// null for an unassigned placeholder). The BE enriches each into a
@@ -44,8 +46,16 @@ public static class PresetHandlers
     {
         dispatcher.Register("listPresets", (_, _, _) =>
         {
-            var names = store.List();
-            return Task.FromResult<object?>(new { presets = names });
+            var rows = store.ListWithMetadata();
+            // Camel-case wire shape; one entry per preset on disk. The FE
+            // sorts as needed (the spec is "newest edited on top").
+            var presets = rows.Select(r => new
+            {
+                name      = r.Name,
+                createdAt = r.CreatedAt,
+                editedAt  = r.EditedAt,
+            }).ToArray();
+            return Task.FromResult<object?>(new { presets });
         });
 
         dispatcher.Register("getCurrentPreset", (_, _, _) =>
@@ -150,6 +160,46 @@ public static class PresetHandlers
             if (string.Equals(currentPreset.Name, name, StringComparison.Ordinal))
                 currentPreset.Clear();
 
+            return Task.FromResult<object?>(new { ok = true });
+        });
+
+        dispatcher.Register("renamePreset", (paramsEl, _, _) =>
+        {
+            var p   = JsonRpcDispatcher.RequireParams<RenamePresetParams>(paramsEl);
+            var old = NormalizeName(p.OldName);
+            var nw  = NormalizeName(p.NewName);
+            try
+            {
+                store.Rename(old, nw);
+            }
+            catch (FileNotFoundException)
+            {
+                throw new JsonRpcException(JsonRpcErrorCode.InvalidParams, $"Preset '{old}' not found.");
+            }
+            catch (IOException ex)
+            {
+                throw new JsonRpcException(JsonRpcErrorCode.InvalidParams, ex.Message);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new JsonRpcException(JsonRpcErrorCode.InvalidParams, ex.Message);
+            }
+
+            // Keep the in-memory "current preset" pointer aligned with disk so
+            // the FE doesn't see a stale name after rename.
+            if (string.Equals(currentPreset.Name, old, StringComparison.Ordinal))
+                currentPreset.Set(nw, currentPreset.InputSlots, currentPreset.OutputSlots);
+
+            return Task.FromResult<object?>(new { ok = true });
+        });
+
+        // Detach the host from whichever preset it last loaded/saved without
+        // touching mixer state. FE "New" calls this so a subsequent reload
+        // doesn't auto-bind back to the previous preset.
+        dispatcher.Register("clearCurrentPreset", (_, _, _) =>
+        {
+            currentPreset.Clear();
+            store.ClearLastPresetName();
             return Task.FromResult<object?>(new { ok = true });
         });
     }

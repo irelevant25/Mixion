@@ -2,8 +2,11 @@
     [class.empty]="!assigned()" [class.unavailable]="unavailable()">
 
     <button type="button" class="header" [attr.aria-label]="'Configure slot ' + letter()" (click)="onOpenConfig()">
-        <span class="letter">{{ letter() }}</span>
-        <span class="name" [title]="device()?.id ?? 'No device'">{{ displayName() }}</span>
+        @if (bus() === 'output') {
+            <span class="letter">{{ letter() }}</span>
+        }
+        <app-device-icon class="device-icon" [bus]="bus()" [channelId]="device()?.id ?? null" />
+        <span class="name" [title]="displayName()">{{ displayName() }}</span>
         @if (unavailable()) {
             <span class="missing-tag" title="Device no longer reported by the host. Refresh from the slot picker to retry.">×</span>
         }

@@ -11,6 +11,7 @@ import {
 import { ChannelBus, ChannelDto, MixerStateStore } from '../../core/mixer-state.store';
 import { IpcError, IpcService } from '../../core/ipc.service';
 import { dbToSlider, formatDb, sliderToDb } from './db-fader';
+import { DeviceIconComponent } from './device-icon.component';
 import { RouteButtonsComponent } from './route-buttons.component';
 import { SlotConfigDialogComponent } from './slot-config-dialog.component';
 import { SlotsStore } from '../../core/slots.store';
@@ -36,6 +37,7 @@ import { ProcessingPanelComponent } from '../processing/processing-panel.compone
   selector: 'app-channel-strip',
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
+    DeviceIconComponent,
     RouteButtonsComponent,
     SlotConfigDialogComponent,
     VuMeterComponent,

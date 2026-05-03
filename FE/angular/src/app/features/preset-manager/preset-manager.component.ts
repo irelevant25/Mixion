@@ -7,47 +7,22 @@ import {
 } from '@angular/core';
 
 import { CurrentPresetService } from '../../core/current-preset.service';
-import { IpcError, IpcService } from '../../core/ipc.service';
-import { MixerStateDto, MixerStateStore } from '../../core/mixer-state.store';
-import { SlotsStore } from '../../core/slots.store';
-
-interface MissingDevice {
-  direction: 'input' | 'output' | string;
-  friendlyName: string;
-  interfaceName: string;
-}
-
-interface ResolvedSlot {
-  deviceId: string | null;
-}
-
-interface ListPresetsResult {
-  presets: string[];
-}
-
-interface LoadPresetResult {
-  ok: boolean;
-  missingDevices: MissingDevice[];
-  inputSlots: ResolvedSlot[];
-  outputSlots: ResolvedSlot[];
-}
-
-interface SlotDeviceDto {
-  deviceId: string | null;
-}
+import { IpcError } from '../../core/ipc.service';
+import {
+  PresetActionsService,
+  PresetMetadata,
+} from '../../core/preset-actions.service';
 
 /**
- * FE-040 / FE-041 / FE-042: end-to-end preset lifecycle.
+ * FE-040 / FE-041 / FE-042: end-to-end preset lifecycle. The presets page is
+ * a list of saved presets with per-row actions (Load, Rename, Delete) and
+ * timestamps; sorting defaults to "newest edited on top". Saving and Save As
+ * happen from the shell header — see <c>AppComponent</c>; this page only
+ * exposes the list and a "New" button that detaches the host from the
+ * currently active preset.
  *
- * - Lists every preset reported by `listPresets`.
- * - Save with a name input; if the name already exists we use
- *   `confirm()` to guard against an accidental overwrite (FE-041).
- * - Load reissues `getState` after applying so the UI reflects the
- *   server-side patched state, and surfaces any `missingDevices` the
- *   backend reports as a banner (FE-042).
- * - Delete also goes through `confirm()` (FE-041).
- *
- * RPC errors are surfaced inline; nothing is persisted client-side.
+ * Confirmation dialogs use <c>window.confirm()</c> for v1 (FE-041); a custom
+ * modal can replace them later if the UX gets ugly.
  */
 @Component({
   selector: 'app-preset-manager',
@@ -56,23 +31,15 @@ interface SlotDeviceDto {
     <section class="presets">
       <header>
         <h2>Presets</h2>
-        <button type="button" class="refresh" (click)="refresh()" [disabled]="loading()">
-          @if (loading()) { Loading… } @else { Refresh }
-        </button>
+        <span class="actions-head">
+          <button type="button" class="new" (click)="onNew()" [disabled]="loading() || busy()">
+            New
+          </button>
+          <button type="button" class="refresh" (click)="refresh()" [disabled]="loading()">
+            @if (loading()) { Loading… } @else { Refresh }
+          </button>
+        </span>
       </header>
-
-      <form class="save" (submit)="onSave($event)">
-        <input
-          name="presetName"
-          type="text"
-          placeholder="Preset name"
-          [value]="newName()"
-          (input)="onNameInput($event)"
-          maxlength="64"
-          autocomplete="off"
-          aria-label="New preset name" />
-        <button type="submit" [disabled]="!canSave()">Save</button>
-      </form>
 
       @if (errorMessage(); as msg) {
         <p class="error" role="alert">
@@ -85,7 +52,7 @@ interface SlotDeviceDto {
         <div class="warn" role="alert">
           <p class="warn-head">
             <strong>Some devices were not found</strong> when loading
-            <code>{{ lastLoaded() }}</code>:
+            <code>{{ lastLoadedName() }}</code>:
           </p>
           <ul>
             @for (d of missingDevices(); track d.friendlyName + d.interfaceName) {
@@ -102,26 +69,59 @@ interface SlotDeviceDto {
         </div>
       }
 
-      @if (presets().length === 0 && !loading()) {
-        <p class="empty">No presets saved yet. Type a name and click Save.</p>
+      @if (sortedPresets().length === 0 && !loading()) {
+        <p class="empty">
+          No presets saved yet. Use Save or Save As at the top of the page to
+          create your first one.
+        </p>
       } @else {
-        <ul class="list">
-          @for (name of presets(); track name) {
-            <li>
-              <span class="name">{{ name }}</span>
-              <span class="actions">
-                <button type="button" (click)="onLoad(name)" [disabled]="busyName() === name">
-                  @if (busyName() === name) { … } @else { Load }
-                </button>
-                <button
-                  type="button"
-                  class="danger"
-                  (click)="onDelete(name)"
-                  [disabled]="busyName() === name">Delete</button>
-              </span>
-            </li>
-          }
-        </ul>
+        <table class="preset-table">
+          <colgroup>
+            <col class="col-name" />
+            <col class="col-ts" />
+            <col class="col-ts" />
+            <col class="col-actions" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Created</th>
+              <th scope="col">Edited</th>
+              <th scope="col" class="col-actions"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (p of sortedPresets(); track p.name) {
+              <tr [class.active]="currentName() === p.name">
+                <td class="cell-name">
+                  <span class="name-text">{{ p.name }}</span>
+                  @if (currentName() === p.name) { <em class="badge">current</em> }
+                </td>
+                <td class="cell-ts" [title]="p.createdAt">{{ formatDate(p.createdAt) }}</td>
+                <td class="cell-ts" [title]="p.editedAt" >{{ formatDate(p.editedAt) }}</td>
+                <td class="cell-actions">
+                  <span class="actions">
+                    <button
+                      type="button"
+                      (click)="onLoad(p.name)"
+                      [disabled]="busyName() === p.name">
+                      @if (busyName() === p.name) { … } @else { Load }
+                    </button>
+                    <button
+                      type="button"
+                      (click)="onRename(p.name)"
+                      [disabled]="busyName() === p.name">Rename</button>
+                    <button
+                      type="button"
+                      class="danger"
+                      (click)="onDelete(p.name)"
+                      [disabled]="busyName() === p.name">Delete</button>
+                  </span>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
       }
     </section>
   `,
@@ -133,7 +133,7 @@ interface SlotDeviceDto {
         border: 1px solid #2a2a2a;
         border-radius: 6px;
         padding: 1rem 1.1rem 1.1rem;
-        max-width: 32rem;
+        max-width: 44rem;
       }
       header {
         display: flex; align-items: center; justify-content: space-between;
@@ -146,60 +146,93 @@ interface SlotDeviceDto {
         text-transform: uppercase;
         color: #888;
       }
-      .refresh {
+      .actions-head { display: flex; gap: 0.4rem; }
+      .new, .refresh {
         background: transparent; border: 1px solid #333; color: #aaa;
-        padding: 0.2rem 0.6rem; border-radius: 3px; cursor: pointer;
+        padding: 0.2rem 0.7rem; border-radius: 3px; cursor: pointer;
         font-size: 11px;
       }
-      .refresh:hover:not(:disabled) { color: #ddd; border-color: #555; }
-      .refresh:disabled { opacity: 0.4; cursor: not-allowed; }
-      form.save {
-        display: flex; gap: 0.4rem; margin-bottom: 0.7rem;
+      .new:hover:not(:disabled), .refresh:hover:not(:disabled) {
+        color: #ddd; border-color: #555;
       }
-      form.save input {
-        flex: 1;
-        background: #0e0e0e;
-        color: #ddd;
-        border: 1px solid #2a2a2a;
-        border-radius: 4px;
-        padding: 0.35rem 0.6rem;
-        font: 13px/1.4 system-ui, sans-serif;
-      }
-      form.save input:focus { outline: 1px solid #2d6cdf; outline-offset: -1px; }
-      form.save button {
-        background: #2d6cdf;
-        color: white;
-        border: 0;
-        border-radius: 4px;
-        padding: 0.35rem 0.9rem;
-        font: 13px/1.4 system-ui, sans-serif;
-        cursor: pointer;
-      }
-      form.save button:disabled { opacity: 0.4; cursor: not-allowed; }
+      .new:disabled, .refresh:disabled { opacity: 0.4; cursor: not-allowed; }
       .empty { color: #888; font-style: italic; margin: 0.4rem 0 0; }
-      ul.list { list-style: none; margin: 0; padding: 0; }
-      ul.list li {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 0.4rem 0.55rem;
-        border-radius: 4px;
+
+      /* Real <table> so the four columns track each other regardless of
+         the longest preset name. fixed layout + colgroup widths keep the
+         timestamp + actions columns from drifting. */
+      table.preset-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 12px;
       }
-      ul.list li:nth-child(odd) { background: #1d1d1d; }
-      ul.list li .name {
+      table.preset-table col.col-name    { width: auto; }
+      table.preset-table col.col-ts      { width: 8.5rem; }
+      table.preset-table col.col-actions { width: 13rem; }
+      table.preset-table th {
+        text-align: left;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #777;
+        padding: 0.35rem 0.55rem;
+        border-bottom: 1px solid #2a2a2a;
+      }
+      table.preset-table th.col-actions { text-align: right; }
+      table.preset-table td {
+        padding: 0.4rem 0.55rem;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      table.preset-table tbody tr:nth-child(odd) td { background: #1d1d1d; }
+      table.preset-table tbody tr.active td:first-child {
+        box-shadow: inset 3px 0 0 #2d6cdf;
+      }
+      table.preset-table .cell-name {
         font-family: ui-monospace, Menlo, Consolas, monospace;
         font-size: 12.5px;
         color: #ddd;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
-      ul.list li .actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
-      ul.list li button {
+      table.preset-table .cell-name .name-text {
+        overflow: hidden; text-overflow: ellipsis;
+      }
+      table.preset-table .cell-name .badge {
+        margin-left: 0.4rem;
+        font-style: normal;
+        font-size: 9.5px;
+        color: #2d6cdf;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      table.preset-table .cell-ts {
+        font-size: 11.5px;
+        color: #aaa;
+        font-variant-numeric: tabular-nums;
+      }
+      table.preset-table .cell-actions { text-align: right; }
+      table.preset-table .actions {
+        display: inline-flex;
+        gap: 0.35rem;
+        white-space: nowrap;
+      }
+      table.preset-table .actions button {
         background: #222; color: #ddd;
         border: 1px solid #3a3a3a; border-radius: 3px;
         padding: 0.2rem 0.6rem;
         cursor: pointer; font-size: 12px;
       }
-      ul.list li button:disabled { opacity: 0.4; cursor: not-allowed; }
-      ul.list li button.danger { color: #f7c8c8; border-color: #6a3030; }
-      ul.list li button.danger:hover:not(:disabled) { background: #3a1f1f; }
+      table.preset-table .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+      table.preset-table .actions button.danger { color: #f7c8c8; border-color: #6a3030; }
+      table.preset-table .actions button.danger:hover:not(:disabled) { background: #3a1f1f; }
+      .visually-hidden {
+        position: absolute; width: 1px; height: 1px;
+        padding: 0; margin: -1px; overflow: hidden;
+        clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+      }
       .error {
         background: #3a1f1f; color: #f7c8c8;
         border: 1px solid #6a3030; border-radius: 4px;
@@ -249,103 +282,85 @@ interface SlotDeviceDto {
   ],
 })
 export class PresetManagerComponent {
-  private readonly ipc     = inject(IpcService);
-  private readonly store   = inject(MixerStateStore);
-  private readonly slots   = inject(SlotsStore);
+  private readonly actions = inject(PresetActionsService);
   private readonly current = inject(CurrentPresetService);
 
-  protected readonly presets        = signal<string[]>([]);
-  protected readonly newName        = signal('');
+  protected readonly presets        = signal<PresetMetadata[]>([]);
   protected readonly loading        = signal(false);
   protected readonly busyName       = signal<string | null>(null);
+  protected readonly busy           = signal(false);
   protected readonly errorMessage   = signal<string | null>(null);
-  protected readonly missingDevices = signal<MissingDevice[]>([]);
-  protected readonly lastLoaded     = signal<string | null>(null);
 
-  protected readonly currentName = this.current.name;
+  protected readonly missingDevices = this.actions.lastMissingDevices;
+  protected readonly lastLoadedName = this.actions.lastLoadedName;
+  protected readonly currentName    = this.current.name;
 
-  protected readonly canSave = computed(() => {
-    const n = this.newName().trim();
-    return n.length > 0 && n.length <= 64 && !this.loading();
+  /** Sorted by edited timestamp, newest first. */
+  protected readonly sortedPresets = computed(() => {
+    const rows = [...this.presets()];
+    rows.sort((a, b) => Date.parse(b.editedAt) - Date.parse(a.editedAt));
+    return rows;
   });
 
   constructor() {
-    // Initial fetch happens once the IPC socket is open. If it's not open
-    // yet (race during APP_INITIALIZER), the user can hit Refresh.
     this.refresh();
   }
 
   protected refresh(): void {
     this.loading.set(true);
-    this.ipc
-      .call<ListPresetsResult>('listPresets')
-      .then((res) => {
-        this.presets.set(res?.presets ?? []);
-      })
+    this.actions
+      .list()
+      .then((rows) => this.presets.set(rows))
       .catch((err) => this.errorMessage.set(this.formatError('listPresets', err)))
       .finally(() => this.loading.set(false));
   }
 
-  protected onNameInput(ev: Event): void {
-    const input = ev.target as HTMLInputElement;
-    this.newName.set(input.value);
-  }
-
-  protected onSave(ev: Event): void {
-    ev.preventDefault();
-    const name = this.newName().trim();
-    if (!name) return;
-
-    if (this.presets().includes(name)) {
+  protected onNew(): void {
+    const currentName = this.currentName();
+    if (currentName) {
       const proceed = window.confirm(
-        `A preset named "${name}" already exists. Overwrite it?`,
+        `Save changes to "${currentName}" before starting a new preset?`,
       );
-      if (!proceed) return;
+      if (proceed) {
+        this.busy.set(true);
+        this.actions
+          .saveAs(currentName)
+          .then(() => this.detach())
+          .catch((err) => this.errorMessage.set(this.formatError('savePreset', err)))
+          .finally(() => this.busy.set(false));
+        return;
+      }
     }
-
-    this.errorMessage.set(null);
-    this.busyName.set(name);
-    const inputSlots  = this.collectSlotDevices('input');
-    const outputSlots = this.collectSlotDevices('output');
-    this.ipc
-      .call<{ ok: boolean }>('savePreset', { name, inputSlots, outputSlots })
-      .then(() => {
-        this.newName.set('');
-        this.current.set(name);
-        this.refresh();
-      })
-      .catch((err) => this.errorMessage.set(this.formatError('savePreset', err)))
-      .finally(() => this.busyName.set(null));
+    this.detach();
   }
 
   protected onLoad(name: string): void {
     this.errorMessage.set(null);
     this.busyName.set(name);
-    this.ipc
-      .call<LoadPresetResult>('loadPreset', { name })
-      .then(async (res) => {
-        this.lastLoaded.set(name);
-        this.missingDevices.set(res?.missingDevices ?? []);
-        // Replay the saved slot layout so the user's strip rows reappear in
-        // their original order with the right devices assigned. Without
-        // this the BE state is patched correctly but the FE has no slots
-        // pointing at those devices, so the mixer looks empty.
-        this.slots.replace(
-          (res?.inputSlots  ?? []).map((s) => s.deviceId),
-          (res?.outputSlots ?? []).map((s) => s.deviceId),
-        );
-        this.current.set(name);
-        // Refresh local state from the authoritative server snapshot — the
-        // optimistic-update pattern used by channel/route changes doesn't
-        // apply here because a preset may touch many cells at once.
-        try {
-          const state = await this.ipc.call<MixerStateDto>('getState');
-          this.store.replace(state);
-        } catch (err) {
-          this.errorMessage.set(this.formatError('getState', err));
-        }
-      })
+    this.actions
+      .load(name)
+      .then(() => this.refresh())
       .catch((err) => this.errorMessage.set(this.formatError('loadPreset', err)))
+      .finally(() => this.busyName.set(null));
+  }
+
+  protected onRename(oldName: string): void {
+    const proposal = window.prompt(`Rename preset "${oldName}" to:`, oldName);
+    if (proposal === null) return;
+    const newName = proposal.trim();
+    if (!newName || newName === oldName) return;
+
+    if (this.presets().some((p) => p.name === newName)) {
+      this.errorMessage.set(`A preset named "${newName}" already exists.`);
+      return;
+    }
+
+    this.errorMessage.set(null);
+    this.busyName.set(oldName);
+    this.actions
+      .rename(oldName, newName)
+      .then(() => this.refresh())
+      .catch((err) => this.errorMessage.set(this.formatError('renamePreset', err)))
       .finally(() => this.busyName.set(null));
   }
 
@@ -355,16 +370,9 @@ export class PresetManagerComponent {
 
     this.errorMessage.set(null);
     this.busyName.set(name);
-    this.ipc
-      .call<{ ok: boolean }>('deletePreset', { name })
-      .then(() => {
-        if (this.lastLoaded() === name) {
-          this.lastLoaded.set(null);
-          this.missingDevices.set([]);
-        }
-        if (this.current.name() === name) this.current.set(null);
-        this.refresh();
-      })
+    this.actions
+      .delete(name)
+      .then(() => this.refresh())
       .catch((err) => this.errorMessage.set(this.formatError('deletePreset', err)))
       .finally(() => this.busyName.set(null));
   }
@@ -374,18 +382,36 @@ export class PresetManagerComponent {
   }
 
   protected dismissMissing(): void {
-    this.missingDevices.set([]);
+    this.actions.clearMissingDevices();
+  }
+
+  protected formatDate(iso: string): string {
+    if (!iso) return '—';
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return iso;
+    const d = new Date(t);
+    // Locale-aware short timestamp; "edited 2 minutes ago" is overkill for v1.
+    return d.toLocaleString(undefined, {
+      year:   '2-digit',
+      month:  '2-digit',
+      day:    '2-digit',
+      hour:   '2-digit',
+      minute: '2-digit',
+    });
   }
 
   /**
-   * Snapshot the current FE slot order for the bus into the wire shape the
-   * BE expects: an ordered array of `{ deviceId | null }`. The BE enriches
-   * each non-null id with friendly + interface name from its endpoint
-   * enumerator before persisting.
+   * Wipe the mixer to a fresh state and detach from the active preset.
+   * `PresetActionsService.newPreset` resets every channel (gain/mute/solo/DSP),
+   * clears the routing matrix, and rebuilds the slot rows to defaults.
    */
-  private collectSlotDevices(bus: 'input' | 'output'): SlotDeviceDto[] {
-    const list = bus === 'input' ? this.slots.inputs() : this.slots.outputs();
-    return list.map((s) => ({ deviceId: s.deviceId }));
+  private detach(): void {
+    this.errorMessage.set(null);
+    this.busy.set(true);
+    this.actions
+      .newPreset()
+      .catch((err) => this.errorMessage.set(this.formatError('resetMixerState', err)))
+      .finally(() => this.busy.set(false));
   }
 
   private formatError(method: string, err: unknown): string {

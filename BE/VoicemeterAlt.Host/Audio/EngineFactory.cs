@@ -32,7 +32,24 @@ public sealed class EngineFactory
 
     public EngineFactory(ILogger logger) { _logger = logger; }
 
-    public BuildResult Build(MixerState? previousState = null)
+    /// <summary>
+    /// Build a fresh engine.
+    /// <para>
+    /// <paramref name="autoDiscoverNewProcesses"/>: if <c>true</c> (default),
+    /// any audio-producing process not already in <paramref name="previousState"/>
+    /// is appended as a new channel — that's what lets the user click Refresh and
+    /// see a newly-launched VLC. If <c>false</c>, only processes whose ids appear
+    /// in <paramref name="previousState"/> are bound; everything else is opened
+    /// then immediately discarded. Pass <c>false</c> from <c>removeProcessLoopback</c>
+    /// so the channel the user just dropped doesn't immediately re-appear.
+    /// </para>
+    /// <para>
+    /// Physical render/capture devices are ALWAYS auto-discovered — the
+    /// flag only gates process loopbacks. Users typically want a freshly
+    /// plugged USB mic to show up no matter why we're rebuilding.
+    /// </para>
+    /// </summary>
+    public BuildResult Build(MixerState? previousState = null, bool autoDiscoverNewProcesses = true)
     {
         var enumerator = new MMDeviceEnumerator();
         var targetRate = ResolveTargetRate(enumerator);
@@ -91,13 +108,28 @@ public sealed class EngineFactory
             }
         }
 
-        // Then process loopbacks not in previous state.
-        foreach (var p in processCaptures)
+        // Then process loopbacks not in previous state. Skipped when the
+        // caller explicitly asked for "no auto-discovery" — typically a
+        // remove operation that doesn't want the just-removed channel
+        // sneaking back in via enumeration.
+        if (autoDiscoverNewProcesses)
         {
-            if (seenInputIds.Add(p.Id))
+            foreach (var p in processCaptures)
             {
-                inputs.Add(p);
-                inputChannels.Add(new Channel(p.Id, p.FriendlyName, GainDb: 0f, Muted: false, Soloed: false));
+                if (seenInputIds.Add(p.Id))
+                {
+                    inputs.Add(p);
+                    inputChannels.Add(new Channel(p.Id, p.FriendlyName, GainDb: 0f, Muted: false, Soloed: false));
+                }
+            }
+        }
+        else
+        {
+            // Dispose orphan PLCs so we don't leak WASAPI handles.
+            foreach (var p in processCaptures)
+            {
+                if (!seenInputIds.Contains(p.Id))
+                    p.Dispose();
             }
         }
 

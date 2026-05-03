@@ -71,6 +71,16 @@ export class SlotsStore {
     this._outputs.set(next('out', outputs));
   }
 
+  /**
+   * Restore both bus rows to their first-run defaults: a fixed number of
+   * unassigned slots per bus. Drives the "New preset" flow alongside the
+   * BE state reset so the mixer looks like a clean slate.
+   */
+  resetToDefaults(): void {
+    this._inputs .set(this.makeDefaults('in'));
+    this._outputs.set(this.makeDefaults('out'));
+  }
+
   removeSlot(bus: ChannelBus, slotId: string): void {
     const prefix = bus === 'input' ? 'in' : 'out';
     this.busSignal(bus).update((prev) => {
@@ -109,24 +119,20 @@ export class SlotsStore {
   }
 }
 
-/** 0→A, 1→B, …, 25→Z, 26→AA, 27→AB, … (raw letter, no bus prefix) */
-export function slotLetter(i: number): string {
-  if (i < 0) return '';
-  let n = i;
-  let s = '';
-  do {
-    s = String.fromCharCode(65 + (n % 26)) + s;
-    n = Math.floor(n / 26) - 1;
-  } while (n >= 0);
-  return s;
-}
-
 /**
- * Voicemeeter-style slot label with a bus prefix so input and output slots
- * never collide in the UI: input 0 → "IA", output 0 → "OA", etc. Use this
- * everywhere a slot is shown to the user (strip header, route buttons, slot
- * config dialog).
+ * Slot label scheme:
+ * - **Outputs** use Voicemeeter's <c>A1, A2, A3, …</c> hardware-bus
+ *   nomenclature so the user can mentally map them to physical
+ *   speakers/headphones.
+ * - **Inputs** use a plain 1-based number (<c>1, 2, 3, …</c>). The strip
+ *   header doesn't display this label — input strips are identified by the
+ *   device name alone — but accessibility helpers (aria-labels, error
+ *   messages) need a stable, short identifier.
+ *
+ * Using two distinct alphabets means an input "1" and an output "A1" never
+ * collide in any tooltip or label.
  */
 export function slotLabel(bus: ChannelBus, i: number): string {
-  return (bus === 'input' ? 'I' : 'O') + slotLetter(i);
+  if (i < 0) return '';
+  return bus === 'output' ? `A${i + 1}` : `${i + 1}`;
 }

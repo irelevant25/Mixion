@@ -4,7 +4,7 @@ A personal Voicemeter Potato alternative for Windows 11. User-mode audio mixer/r
 
 > **What this is:** a single Windows .exe that runs an audio mixer, exposes a routing matrix + channel strips + VU meters in your browser at `http://127.0.0.1:<port>/`, and persists presets as JSON.
 >
-> **What this is NOT:** a full Voicemeter replacement. This app does **not** install its own virtual audio devices. Other apps will not see "VoicemeterAlt Input" in their device list. Instead, you route apps to VB-CABLE Input (via Windows audio settings or app-level output selection), and our mixer pulls from VB-CABLE Output. Shipping a kernel virtual audio driver on Windows 11 requires an EV code-signing certificate (~$300–600/year), which is out of scope for this project.
+> **What this is NOT:** a full Voicemeter replacement. This app does **not** install its own virtual audio devices. Other apps will not see "VoicemeterAlt Input" in their device list. Instead, you route apps to VB-CABLE Input (via Windows audio settings or app-level output selection), and our mixer pulls from VB-CABLE Output. Shipping a kernel virtual audio driver on Windows 11 requires an EV code-signing certificate, which is out of scope for this project.
 
 ---
 
@@ -35,7 +35,7 @@ Single-process model. The .NET 8 host runs the audio engine, an HTTP server (Kes
 - Kestrel + WebSockets is in the .NET BCL — no additional shell/runtime dependency.
 
 **Why browser-based UI**
-- Already meets the user's "I know Angular very well" goal without dragging in Electron's ~150 MB.
+- Without dragging in Electron's ~150 MB.
 - The artifact stays small: one self-contained .exe with Angular embedded.
 - Open in any browser — Chrome, Edge, Firefox. Bookmark the URL.
 
@@ -81,7 +81,7 @@ See [BE/README.md](BE/README.md) for backend tasks and [FE/README.md](FE/README.
 ## Prerequisites
 
 - Windows 11 (or Windows 10 22H2+)
-- **VB-CABLE** installed (https://vb-audio.com/Cable/) — provides the virtual audio endpoints the mixer routes to/from
+- **Basic VB-CABLE** installed (https://vb-audio.com/Cable/) — the free single-cable download labelled *"VB-CABLE Virtual Audio Device"*. Higher-tier products (VB-CABLE A+B, VB-CABLE C+D, the Voicemeeter family) are **not** sufficient on their own — see [Driver presence check](#driver-presence-check-runtime) below.
 - **.NET 8 SDK** (for development; end users with the `portable` build need nothing)
 - **Node.js 20+** and **npm**
 - A modern browser (Chrome / Edge / Firefox) — already on every Windows install
@@ -148,15 +148,15 @@ The Angular files travel inside the assembly as embedded resources (via `Manifes
 
 ## Driver presence check (runtime)
 
-The packaged app **requires VB-CABLE to be installed** to be useful — otherwise there are no virtual endpoints to mix. The check runs on every launch, before any HTTP server starts:
+The packaged app **requires the basic VB-CABLE to be installed** to be useful — otherwise there are no virtual endpoints to mix. The check runs on every launch, before any HTTP server starts:
 
-1. The host enumerates WASAPI render+capture endpoints and looks for a VB-Audio device (matches `"VB-Audio"`, `"CABLE Input"`, or `"CABLE Output"` in the friendly name, case-insensitive).
+1. The host enumerates WASAPI render+capture endpoints and looks for an endpoint whose friendly name **starts with** `"CABLE Input"` or `"CABLE Output"` (case-insensitive, with a whitespace or `(` boundary). That's the signature of the free single-cable VB-CABLE — render endpoint *"CABLE Input (VB-Audio Virtual Cable)"*, capture endpoint *"CABLE Output (VB-Audio Virtual Cable)"*.
 2. **Found** → continue: bind Kestrel to a free port, start audio engine, log the URL, optionally open the default browser to it, run.
-3. **Not found** → show a native Windows error dialog (`MessageBoxW` via P/Invoke):
-   > *VB-CABLE driver not detected. VoicemeterAlt requires VB-CABLE to provide virtual audio endpoints. Install it from https://vb-audio.com/Cable/ and relaunch the app.*
-   After the user dismisses the dialog, the process exits cleanly. No HTTP server, no audio engine, no leftover process.
+3. **Not found** → show a native Windows error dialog (`MessageBoxW` via P/Invoke) telling the user to install the basic VB-CABLE and exit cleanly with code 2. No HTTP server, no audio engine, no leftover process.
 
-This happens entirely inside the .exe. There is no separate launcher. Whether the user double-clicks the portable .exe or runs `dotnet run`, the behavior is the same.
+**Why specifically the basic version.** VB-Audio also ships VB-CABLE A+B, VB-CABLE C+D, and the Voicemeeter family. These install endpoints with distinct prefixes — `CABLE-A Input`, `CABLE-B Output`, `VoiceMeeter VAIO`, etc. Those are deliberately rejected by the probe: this app's mental model is "one virtual cable, in and out", and accepting any VB-Audio variant would let the user end up with multiple cables to choose between, plus inconsistent friendly names in saved presets across machines. If a user installs both basic VB-CABLE and a higher-tier variant, the probe still passes — the basic endpoint is enough.
+
+This happens entirely inside the .exe. There is no separate launcher. Whether the user double-clicks the portable .exe or runs `dotnet run`, the behavior is the same. `--no-driver-check` is available as a development convenience and is not exposed in packaged builds.
 
 ---
 
@@ -169,9 +169,12 @@ This happens entirely inside the .exe. There is no separate launcher. Whether th
 | Per-channel mute | ✅ | |
 | Per-channel solo | ✅ | Soloing any channel mutes non-soloed channels in same bus |
 | Real-time peak + RMS VU meters | ✅ | 30 Hz telemetry, 60 fps canvas redraw |
-| Save/load JSON presets | ✅ | Re-resolves devices by friendly name on load |
+| Per-channel DSP — gate, parametric EQ, compressor, pan | ✅ | Independently bypassable; canvas-based EQ curve with draggable bands |
+| Per-process loopback capture (Chrome / Spotify / OBS / games) | ✅ | Win10 20348+/Win11; auto-rebinds on process restart by name |
+| Runtime device refresh | ✅ | `refreshDevices` RPC re-enumerates devices + audio processes without a host restart |
+| Save/load JSON presets | ✅ | Re-resolves devices by friendly name on load; DSP state and slot layout round-trip |
+| Preset metadata (created / edited timestamps, rename) | ✅ | List view sorts by edited desc; "current preset" pointer auto-loaded on next host start |
 | Auto-open default browser on launch | ✅ | `--no-browser` flag to disable |
-| EQ / compressor / gate | ❌ | Future v1.x |
 | ASIO support | ❌ | Future v1.x |
 | MIDI control | ❌ | Future v1.x |
 | Sample-rate conversion across mismatched devices | ❌ | v1 detects mismatch and refuses to start with a clear error |
@@ -189,8 +192,10 @@ This happens entirely inside the .exe. There is no separate launcher. Whether th
 | M3 | Routing matrix + JSON-RPC | RPC handlers + state mutation over `/ws` | NxM grid wired to RPCs |
 | M4 | Gain / mute / solo | Engine applies, RPCs to set | Channel strips |
 | M5 | VU meters end-to-end | Telemetry frames at 30 Hz over `/ws` | Canvas meters at 60 fps |
-| M6 | Presets | JSON I/O, device re-resolve | Preset manager UI |
-| M7 | Polish | Single-instance, crash logs, embedded `wwwroot`, single-file publish | Reconnect, error states, prod build wired into `build.ps1` |
+| M6 | Presets | JSON I/O, device re-resolve, created/edited timestamps, rename, "current preset" detach | Preset manager UI: list with timestamps, sort by edited; shell Save / Save As; "New" button |
+| M7 | Per-channel DSP | Gate, 5-band parametric EQ, compressor, pan — applied per input strip and per output bus | Processing drawer: gate / EQ / compressor / pan controls; canvas-based EQ curve |
+| M9 | Per-process loopback capture | Win10 20348+/Win11 process loopback; auto-rebind on PID change; `refreshDevices` runtime refresh | Slot picker lists processes alongside devices; per-row detach button; `available=false` red strips |
+| M8 | Polish | Single-instance, crash logs, embedded `wwwroot`, single-file publish | Reconnect, error states, prod build wired into `build.ps1` |
 
 Each milestone is independently shippable to yourself. **Detailed tasks** for each side are in:
 - [BE/README.md](BE/README.md) — backend
@@ -201,13 +206,15 @@ Each milestone is independently shippable to yourself. **Detailed tasks** for ea
 ## Critical implementation notes
 
 - **MMCSS is not optional.** Without `AvSetMmThreadCharacteristics("Pro Audio")` on the audio threads, you'll get glitches under any system load. One P/Invoke call.
-- **Zero allocation on the audio path.** Pre-allocate every `float[]` at startup. Verify with BenchmarkDotNet's memory diagnoser before each release.
+- **Zero allocation on the audio path.** Pre-allocate every `float[]` at startup. Verify with BenchmarkDotNet's memory diagnoser before each release. The DSP chain (gate → EQ → compressor → pan) and per-process loopback ring buffers all comply.
 - **Pin Kestrel to `127.0.0.1`.** Never bind to `0.0.0.0` or any public interface — this app should never be reachable from the LAN. HMAC-token-on-WS gives an extra layer.
 - **HTTPS is not used.** The whole stack is loopback-only on the same machine; certificates would just add friction. Browsers permit unencrypted WebSockets to `127.0.0.1` without warnings.
 - **Angular bundle goes inside the assembly.** `ManifestEmbeddedFileProvider` keeps the .exe truly portable. `dotnet publish` settings: `<GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>` and `<EmbeddedResource Include="wwwroot\**\*" />`.
-- **Sample-rate mismatch is the #1 WASAPI bug source.** Detect on start; refuse with a clear error rather than silently glitching.
+- **Sample-rate mismatch is the #1 WASAPI bug source.** Detect on start; refuse with a clear error rather than silently glitching. Channels with no live device (unplugged mic, dead process loopback) survive in `MixerState` with `Available = false` and contribute silence — they don't take down the engine.
 - **Solo logic gotcha:** soloing any channel forces all non-soloed channels in the same bus to be muted. Easy to get backwards. Unit test it.
-- **Device GUIDs aren't stable across reboots.** Resolve presets by endpoint friendly name + interface name; warn on missing device.
+- **Device GUIDs aren't stable across reboots.** Resolve presets by endpoint friendly name + interface name; warn on missing device. Process loopbacks use `process:<name>` (PID-free) so a Chrome restart re-attaches to the same channel.
+- **Engine rebuilds funnel through one place.** `EngineHost.RebuildAsync` serialises every teardown/rebuild path (Refresh, `removeProcessLoopback`, the process-health watchdog) so two rebuilds can't race for the same WASAPI endpoints. Expect a ~200 ms audible gap during each rebuild — acceptable for explicit user actions; BE-110 is the future "true atomic swap" that eliminates it.
+- **Driver probe is intentionally narrow.** Only the basic single-cable VB-CABLE satisfies it (see [Driver presence check](#driver-presence-check-runtime)). Don't loosen the matcher to "any VB-Audio device" — the routing UX depends on having exactly one canonical *CABLE Input* / *CABLE Output* pair.
 
 ---
 

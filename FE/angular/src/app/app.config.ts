@@ -44,6 +44,37 @@ export const appConfig: ApplicationConfig = {
 
         const token = session.token();
         if (token) {
+          // Auto-reconnect (FE-060): on every WS drop, the IpcService waits
+          // 1 / 2 / 4 / 8 / 16 / 30 s, re-fetches /api/session for a fresh
+          // token (host restarts mint new tokens), reconnects, then runs
+          // onReconnected — getState() + store.replace() so the UI is in
+          // sync with the post-restart engine. Telemetry / spectrum
+          // re-subscription is handled inside connect() itself.
+          ipc.enableAutoReconnect({
+            tokenProvider: async () => {
+              await session.init();
+              const fresh = session.token();
+              if (!fresh) throw new Error('Session refresh did not yield a token.');
+              const init = session.state();
+              if (init) store.replace(init);
+              const inSlots  = session.inputSlots();
+              const outSlots = session.outputSlots();
+              if (inSlots.length > 0 || outSlots.length > 0) {
+                slots.replace(toIds(inSlots), toIds(outSlots));
+              }
+              current.set(session.currentPreset());
+              return fresh;
+            },
+            onReconnected: async () => {
+              try {
+                const state = await ipc.call<MixerStateDto>('getState');
+                store.replace(state);
+              } catch {
+                /* getState() failure is non-fatal — banner already reflects status */
+              }
+            },
+          });
+
           // Don't block first paint on the WS handshake — kick it off and
           // re-sync state once the socket is open. /api/session can race the
           // engine start (the host serves /api before audio is ready), so the
