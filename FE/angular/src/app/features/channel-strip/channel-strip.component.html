@@ -1,0 +1,77 @@
+<div class="strip" [class.dimmed]="dimmed()" [class.muted]="muted()" [class.soloed]="soloed()"
+    [class.empty]="!assigned()" [class.unavailable]="unavailable()">
+
+    <button type="button" class="header" [attr.aria-label]="'Configure slot ' + letter()" (click)="onOpenConfig()">
+        <span class="letter">{{ letter() }}</span>
+        <span class="name" [title]="device()?.id ?? 'No device'">{{ displayName() }}</span>
+        @if (unavailable()) {
+            <span class="missing-tag" title="Device no longer reported by the host. Refresh from the slot picker to retry.">×</span>
+        }
+    </button>
+
+    <div class="strip-body">
+        <div class="col">
+            <div class="fader" [class.disabled]="!assigned()">
+                <div class="fader-row">
+                    <input type="range" min="0" max="1" step="0.001" [value]="sliderValue()" [disabled]="!assigned()"
+                        [attr.aria-label]="'Gain for slot ' + letter()" [attr.aria-valuetext]="readout()"
+                        (input)="onSliderInput($event)" (change)="onSliderChange($event)"
+                        (keydown)="onSliderKeydown($event)" (dblclick)="onResetGain()" />
+                    <div class="meters">
+                        <app-vu-meter [channelIndex]="meterIndexL()" [ariaLabel]="'Left level for slot ' + letter()" />
+                        <app-vu-meter [channelIndex]="meterIndexR()" [ariaLabel]="'Right level for slot ' + letter()" />
+                    </div>
+                </div>
+                <div class="readout" aria-hidden="true">{{ readout() }}</div>
+            </div>
+            <button type="button" class="btn mute" [class.on]="muted()" [disabled]="!assigned()"
+                [attr.aria-pressed]="muted()" [attr.aria-label]="(muted() ? 'Unmute ' : 'Mute ') + letter()"
+                (click)="onToggleMute()">
+                M
+            </button>
+        </div>
+        <div class="col">
+            @if (bus() === 'input') {
+            <app-route-buttons [inputSlotId]="slotId()" [inputLetter]="letter()" />
+            } @else {
+            <div class="col-spacer" aria-hidden="true"></div>
+            }
+            <button type="button" class="btn solo" [class.on]="soloed()" [disabled]="!assigned()"
+                [attr.aria-pressed]="soloed()" [attr.aria-label]="(soloed() ? 'Unsolo ' : 'Solo ') + letter()"
+                (click)="onToggleSolo()">
+                S
+            </button>
+        </div>
+    </div>
+
+    @if (errorMessage(); as err) {
+    <div class="strip-error" role="alert">
+        <span>{{ err }}</span>
+        <button type="button" (click)="dismissError()" aria-label="Dismiss error">×</button>
+    </div>
+    }
+
+    <app-slot-config-dialog #configDlg [bus]="bus()" [slotId]="slotId()" [letter]="letter()" />
+
+    @if (fxOpen() && beIndex() >= 0) {
+    <app-processing-panel [bus]="bus()" [index]="beIndex()" [label]="letter()" (closed)="onFxClosed()" />
+    }
+
+    <div class="fx-row">
+        <button type="button" class="btn eq" [class.on]="eqEnabled()" [disabled]="!assigned()"
+            [attr.aria-label]="'Open EQ settings for ' + letter()"
+            (click)="onOpenFx()">
+            EQ
+        </button>
+        <button type="button" class="btn comp" [class.on]="compEnabled()" [disabled]="!assigned()"
+            [attr.aria-label]="'Open compressor settings for ' + letter()"
+            (click)="onOpenFx()">
+            COMP
+        </button>
+        <button type="button" class="btn gate" [class.on]="gateEnabled()" [disabled]="!assigned()"
+            [attr.aria-label]="'Open gate settings for ' + letter()"
+            (click)="onOpenFx()">
+            GATE
+        </button>
+    </div>
+</div>

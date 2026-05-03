@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+    <AssemblyName>VoicemeterAlt</AssemblyName>
+    <RootNamespace>VoicemeterAlt.Host</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      Whole project is Windows-only by design (WASAPI, MMCSS, MessageBox,
+      process loopback). The CA1416 platform-availability analyzer keys off
+      TargetFramework, not RuntimeIdentifier, so it can't tell. Suppressing
+      keeps the build noise-free without changing TargetFramework — switching
+      to net8.0-windows pulls in unwanted desktop targeting concerns.
+    -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="8.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The Angular bundle is copied here by build.ps1 before publish.
+      Everything in wwwroot/ is embedded into the assembly so the .exe
+      ships truly self-contained (no companion wwwroot/ folder).
+
+      During development a placeholder index.html is committed so /
+      serves something sensible before the FE bundle is staged.
+    -->
+    <EmbeddedResource Include="wwwroot\**\*" />
+    <Content Remove="wwwroot\**\*" />
+    <None Remove="wwwroot\**\*" />
+  </ItemGroup>
+
+</Project>

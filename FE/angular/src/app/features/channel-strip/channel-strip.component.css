@@ -1,0 +1,220 @@
+:host {
+  display: inline-block;
+}
+
+.strip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.6rem;
+  width: 9rem;
+  flex: 0 0 9rem;        /* don't grow or shrink — strict row uses overflow-x */
+  padding: 0.6rem;
+  background: #181818;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  color: #ddd;
+  font: 12px/1.3 system-ui, sans-serif;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+
+.strip.dimmed       { opacity: 0.4; }
+.strip.soloed       { border-color: #d3a82a; box-shadow: inset 0 0 0 1px #d3a82a; }
+.strip.muted        { border-color: #5a3a3a; }
+.strip.empty        { border-style: dashed; border-color: #333; background: #161616; }
+
+/* Header (slot letter + assigned device name; opens config dialog) */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.45rem;
+  background: #1d1d1d;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.header:hover { border-color: #4a4a4a; }
+.strip.empty .header { background: #1a1a1a; border-style: dashed; }
+
+.letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  padding: 0 0.3rem;
+  background: #2d6cdf;
+  color: #fff;
+  font: 600 11px/1 system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+}
+.strip.empty .letter { background: #444; color: #aaa; }
+
+.name {
+  flex: 1;
+  font-weight: 500;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.strip.empty .name { color: #888; font-style: italic; }
+
+/* Unavailable: device is bound but the BE no longer has a working source
+   for it (mic unplugged, app closed, …). Slot stays put with all settings
+   preserved, but we paint it red so the user knows audio isn't flowing. */
+.strip.unavailable               { border-color: #6a3030; }
+.strip.unavailable .name         { color: #f06b6b; }
+.strip.unavailable .header:hover { border-color: #8a4040; }
+.missing-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: #6a3030;
+  color: #f7c8c8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.config-hint {
+  color: #666;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  height: 11rem;
+}
+.fader.disabled { opacity: 0.35; }
+
+.fader-row {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 0;
+}
+
+.fader input[type='range'] {
+  appearance: slider-vertical;
+  -webkit-appearance: slider-vertical;
+  writing-mode: bt-lr;
+  width: 1.4rem;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #2d6cdf;
+}
+.fader input[type='range']:disabled { cursor: not-allowed; }
+
+.fader-row app-vu-meter {
+  height: 100%;
+}
+
+/* Twin VU bars — L on the left, R on the right. */
+.meters {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 100%;
+}
+
+.readout {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: #aaa;
+  min-width: 4rem;
+  text-align: center;
+}
+
+.strip-body {
+  display: flex;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+
+.col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: stretch;
+  justify-content: space-between;
+}
+
+.col-spacer {
+  flex: 1;
+}
+
+.btn {
+  width: 100%;
+  padding: 0.3rem 0;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  background: #222;
+  color: #ddd;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  transition: background-color 80ms ease, border-color 80ms ease;
+}
+.btn:hover:not(:disabled) { border-color: #555; background: #2a2a2a; }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn.mute.on { background: #b04545; border-color: #d05757; color: #fff; }
+.btn.solo.on { background: #d3a82a; border-color: #e6bb3c; color: #1a1a1a; }
+
+/* Bottom row: EQ / COMP / GATE toggle buttons. Each lights up like M/S
+   when the matching DSP stage is enabled on the assigned channel. */
+.fx-row {
+  display: flex;
+  gap: 0.25rem;
+}
+.fx-row .btn {
+  flex: 1;
+  padding: 0.3rem 0;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+.btn.eq.on   { background: #2d6cdf; border-color: #4a85ee; color: #fff; }
+.btn.comp.on { background: #3aaf6f; border-color: #4cc384; color: #0e1a14; }
+.btn.gate.on { background: #9b4ae0; border-color: #b066ee; color: #fff; }
+
+.strip-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.3rem 0.4rem;
+  background: #3a1f1f;
+  border: 1px solid #6a3030;
+  border-radius: 3px;
+  color: #f7c8c8;
+  font-size: 11px;
+}
+.strip-error button {
+  background: transparent;
+  border: 0;
+  color: #f7c8c8;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 0.2rem;
+}
