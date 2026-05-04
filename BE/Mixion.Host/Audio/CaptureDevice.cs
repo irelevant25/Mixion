@@ -20,19 +20,37 @@ public sealed class CaptureDevice : IAudioCaptureSource
     private readonly float[]       _scratchMono;
     private IntPtr                 _mmcssHandle;
 
+    /// <summary>
+    /// Default capture buffer in ms when the user hasn't picked a value.
+    /// Matches the typical shared-mode WASAPI engine period; the runtime
+    /// settings store overrides this.
+    /// </summary>
+    public const int DefaultCaptureBufferMs = 10;
+
+    private readonly int _bufferMs;
+
     public string Id           => _device.ID;
     public string FriendlyName => _device.FriendlyName;
     public int    SampleRate   => _capture.WaveFormat.SampleRate;
     public int    SourceChannels => _capture.WaveFormat.Channels;
+    public int    BitsPerSample  => _capture.WaveFormat.BitsPerSample;
     public RingBuffer Ring     => _ring;
+    public int    BufferMilliseconds => _bufferMs;
+    public event EventHandler? DataReady;
 
-    public CaptureDevice(MMDevice device, int ringCapacitySamples)
+    public CaptureDevice(MMDevice device, int ringCapacitySamples, int bufferMs = DefaultCaptureBufferMs)
     {
-        _device  = device;
-        _capture = new WasapiCapture(device, useEventSync: true)
+        _device   = device;
+        _bufferMs = bufferMs;
+        // NAudio's default capture buffer is 100 ms — that's the dominant
+        // chunk of end-to-end latency in a CABLE round-trip setup
+        // (mic → us → CABLE Input → CABLE Output → us), where the signal
+        // hits a WASAPI capture twice. 10 ms matches the typical shared-mode
+        // engine period on Windows; the OS rounds up if the device can't
+        // honour it. The 3-arg ctor is the only way to set this in
+        // NAudio 2.x — there's no public BufferMilliseconds property.
+        _capture = new WasapiCapture(device, useEventSync: true, audioBufferMillisecondsLength: bufferMs)
         {
-            // M2: keep buffer compact for low latency. NAudio's default is
-            // chunky on capture; we shrink to ~10 ms equivalent at 48 kHz.
             ShareMode = AudioClientShareMode.Shared,
         };
 
@@ -75,5 +93,6 @@ public sealed class CaptureDevice : IAudioCaptureSource
         var span   = _scratchMono.AsSpan();
         var frames = WaveFormatX.ConvertToMono(e.Buffer.AsSpan(0, e.BytesRecorded), fmt, span);
         _ring.Write(span.Slice(0, frames));
+        DataReady?.Invoke(this, EventArgs.Empty);
     }
 }

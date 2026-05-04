@@ -28,9 +28,14 @@ public sealed class EngineFactory
     /// <summary>4 k mono samples ≈ 85 ms @ 48 kHz. Same value Program.cs used inline.</summary>
     private const int RingSamples = 1 << 12;
 
-    private readonly ILogger _logger;
+    private readonly ILogger             _logger;
+    private readonly AudioSettingsStore? _settingsStore;
 
-    public EngineFactory(ILogger logger) { _logger = logger; }
+    public EngineFactory(ILogger logger, AudioSettingsStore? settingsStore = null)
+    {
+        _logger        = logger;
+        _settingsStore = settingsStore;
+    }
 
     /// <summary>
     /// Build a fresh engine.
@@ -55,13 +60,34 @@ public sealed class EngineFactory
         var targetRate = ResolveTargetRate(enumerator);
         _logger.LogInformation("Engine target sample rate: {Rate} Hz", targetRate);
 
-        var (physicalCaptures, physicalIdToCapture) = OpenAllPhysical(
-            enumerator, DataFlow.Capture, targetRate,
-            (mm, ring) => new CaptureDevice(mm, ring));
+        var settings = _settingsStore?.Current ?? AudioSettings.Default;
+        _logger.LogInformation(
+            "Audio settings: capture={CaptureMs} ms, render={RenderMs} ms, preferLowLatency={PreferLow}",
+            settings.CaptureBufferMs, settings.RenderLatencyMs, settings.PreferLowLatency);
 
-        var (physicalRenders, physicalIdToRender) = OpenAllPhysical(
+        // Try low-latency (IAudioClient3) first when the user opts in; fall
+        // back to the regular NAudio-backed device on any failure (older OS,
+        // driver doesn't implement the min-period contract, virtual cable
+        // that can't honour InitializeSharedAudioStream). The fallback log
+        // line is INFO-level so a busy box with mixed device support still
+        // leaves a clear breadcrumb of who got what.
+        var (physicalCaptures, physicalIdToCapture) = OpenAllPhysical<IAudioCaptureSource>(
+            enumerator, DataFlow.Capture, targetRate,
+            (mm, ring) => settings.PreferLowLatency
+                ? OpenLowLatencyOrFallback<IAudioCaptureSource>(
+                    () => new LowLatencyCaptureDevice(mm, ring),
+                    () => new CaptureDevice(mm, ring, settings.CaptureBufferMs),
+                    $"capture '{mm.FriendlyName}'")
+                : new CaptureDevice(mm, ring, settings.CaptureBufferMs));
+
+        var (physicalRenders, physicalIdToRender) = OpenAllPhysical<IRenderDevice>(
             enumerator, DataFlow.Render, targetRate,
-            (mm, ring) => new RenderDevice(mm, ring));
+            (mm, ring) => settings.PreferLowLatency
+                ? OpenLowLatencyOrFallback<IRenderDevice>(
+                    () => new LowLatencyRenderDevice(mm, ring),
+                    () => new RenderDevice(mm, ring, settings.RenderLatencyMs),
+                    $"render '{mm.FriendlyName}'")
+                : new RenderDevice(mm, ring, settings.RenderLatencyMs));
 
         var processCaptures = OpenProcessLoopbacks(targetRate);
         var processIdToCapture = processCaptures.ToDictionary(c => c.Id);
@@ -133,7 +159,7 @@ public sealed class EngineFactory
             }
         }
 
-        var renders        = new List<RenderDevice?>();
+        var renders        = new List<IRenderDevice?>();
         var renderChannels = new List<Channel>();
         var seenRenderIds  = new HashSet<string>();
 
@@ -198,6 +224,33 @@ public sealed class EngineFactory
     }
 
     public sealed record BuildResult(MixEngine Engine, MixerState InitialState);
+
+    /// <summary>
+    /// Open a device through <paramref name="lowLatency"/> first; on any
+    /// exception fall back to <paramref name="legacy"/>. Lets the engine
+    /// pick up the IAudioClient3 path on machines that support it (Win10
+    /// 1803+, modern audio drivers) without breaking on virtual cables or
+    /// older drivers that reject <c>InitializeSharedAudioStream</c>.
+    /// </summary>
+    private TDevice OpenLowLatencyOrFallback<TDevice>(
+        Func<TDevice> lowLatency,
+        Func<TDevice> legacy,
+        string label)
+    {
+        try
+        {
+            var d = lowLatency();
+            _logger.LogInformation("Opened {Label} via IAudioClient3 (low-latency).", label);
+            return d;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation(
+                "IAudioClient3 path unavailable for {Label} ({Reason}); using regular shared-mode WASAPI.",
+                label, ex.Message);
+            return legacy();
+        }
+    }
 
     private (List<TDevice> ordered, Dictionary<string, TDevice> byId) OpenAllPhysical<TDevice>(
         MMDeviceEnumerator enumerator,
@@ -291,7 +344,7 @@ public sealed class EngineFactory
         return result;
     }
 
-    private List<LoopbackCapture?> OpenLoopbacks(MMDeviceEnumerator enumerator, List<RenderDevice?> renders)
+    private List<LoopbackCapture?> OpenLoopbacks(MMDeviceEnumerator enumerator, List<IRenderDevice?> renders)
     {
         var result = new List<LoopbackCapture?>(renders.Count);
         foreach (var r in renders)

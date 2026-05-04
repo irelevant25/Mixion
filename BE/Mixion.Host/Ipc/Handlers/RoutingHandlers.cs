@@ -7,7 +7,7 @@ namespace Mixion.Host.Ipc.Handlers;
 /// via <see cref="MixEngine.SnapshotState"/>, build a new immutable record
 /// with the patched <see cref="State.RoutingMatrix"/>, and publish it via
 /// <see cref="MixEngine.PublishState"/>. The mix loop picks it up on its next
-/// tick (sub-millisecond at 256-frame blocks @ 48 kHz).
+/// tick (~2.7 ms at 128-frame blocks @ 48 kHz).
 /// </summary>
 public static class RoutingHandlers
 {

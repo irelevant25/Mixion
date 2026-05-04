@@ -1,2 +1,12 @@
 BE/*/bin/*
 BE/*/obj/*
+
+# Angular build output staged into the host for embedding. Repopulated by
+# build.ps1 on every publish; the hashed filenames change every build, so
+# committing them creates churn. Dev mode runs `ng serve` separately and
+# StaticFiles.cs falls back to a "UI bundle is missing" page when the
+# folder is empty, so an empty wwwroot is safe at HEAD.
+BE/Mixion.Host/wwwroot/
+
+# Single-file .exe produced by build.ps1.
+output/

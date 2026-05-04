@@ -14,7 +14,7 @@ namespace Mixion.Host.Audio;
 /// The ring's float capacity is doubled internally — callers still pass a
 /// "frames" value, and we hold 2 floats per frame.
 /// </summary>
-public sealed class RenderDevice : IDisposable
+public sealed class RenderDevice : IRenderDevice
 {
     private readonly MMDevice                _device;
     private readonly WasapiOut               _output;
@@ -26,12 +26,15 @@ public sealed class RenderDevice : IDisposable
     public string FriendlyName => _device.FriendlyName;
     public int    SampleRate   => _output.OutputWaveFormat.SampleRate;
     public int    DestChannels => _output.OutputWaveFormat.Channels;
+    public int    BitsPerSample => _output.OutputWaveFormat.BitsPerSample;
     public RingBuffer Ring     => _ring;
+    public int    LatencyMs    { get; }
 
-    public RenderDevice(MMDevice device, int ringCapacityFrames, int latencyMs = 30)
+    public RenderDevice(MMDevice device, int ringCapacityFrames, int latencyMs = 10)
     {
         _device   = device;
         _output   = new WasapiOut(device, AudioClientShareMode.Shared, useEventSync: true, latency: latencyMs);
+        LatencyMs = latencyMs;
         var fmt   = device.AudioClient.MixFormat;
 
         // Ring holds interleaved stereo floats — 2 floats per frame.

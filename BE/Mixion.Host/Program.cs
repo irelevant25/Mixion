@@ -104,8 +104,12 @@ internal static class Program
         builder.Services.AddHostedService<TelemetryBroadcaster>();
         builder.Services.AddHostedService<SpectrumBroadcaster>();
         builder.Services.AddSingleton<IEndpointSource, DeviceEnumerator>();
+        builder.Services.AddSingleton(provider => new AudioSettingsStore(
+            AudioSettingsStore.DefaultFilePath(),
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger("AudioSettingsStore")));
         builder.Services.AddSingleton(provider => new EngineFactory(
-            provider.GetRequiredService<ILoggerFactory>().CreateLogger("MixEngine")));
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger("MixEngine"),
+            provider.GetRequiredService<AudioSettingsStore>()));
         // BE-106: watchdog rebinds process loopbacks when their PID dies.
         builder.Services.AddHostedService<ProcessHealthMonitor>();
         builder.Services.AddSingleton<CurrentPresetState>();
@@ -134,6 +138,15 @@ internal static class Program
                 dispatcher,
                 provider.GetRequiredService<EngineHost>(),
                 provider.GetRequiredService<TelemetryHub>());
+            LatencyHandlers.Register(
+                dispatcher,
+                provider.GetRequiredService<EngineHost>(),
+                provider.GetRequiredService<ILoggerFactory>().CreateLogger("LatencyHandlers"));
+            AudioSettingsHandlers.Register(
+                dispatcher,
+                provider.GetRequiredService<AudioSettingsStore>(),
+                provider.GetRequiredService<EngineHost>(),
+                provider.GetRequiredService<EngineFactory>());
             PresetHandlers.Register(
                 dispatcher,
                 provider.GetRequiredService<EngineHost>(),
@@ -180,8 +193,7 @@ internal static class Program
         var engineHost = app.Services.GetRequiredService<EngineHost>();
         try
         {
-            engine = StartFullDeviceEngine(
-                app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("MixEngine"));
+            engine = StartFullDeviceEngine(app.Services.GetRequiredService<EngineFactory>());
             engineHost.Set(engine);
         }
         catch (Exception ex)
@@ -320,9 +332,9 @@ internal static class Program
     /// runtime <c>refreshDevices</c> RPC can rebuild the engine via the same
     /// path with previous state preserved.
     /// </summary>
-    private static MixEngine StartFullDeviceEngine(ILogger logger)
+    private static MixEngine StartFullDeviceEngine(EngineFactory factory)
     {
-        return new EngineFactory(logger).Build(previousState: null).Engine;
+        return factory.Build(previousState: null).Engine;
     }
 
 }

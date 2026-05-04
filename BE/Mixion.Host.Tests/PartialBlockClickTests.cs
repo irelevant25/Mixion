@@ -63,16 +63,19 @@ public class PartialBlockClickTests
         var b = AllocBuffers();
         var state = Passthrough();
 
-        // 1 kHz sine at 48 kHz: 48 samples per cycle. Fill 200 samples, zero the rest.
+        // 1 kHz sine at 48 kHz: 48 samples per cycle. Fill the first half of
+        // the block, zero the rest — picks a non-zero crossing to land the
+        // partial-read boundary on so the post-fill step is large.
         for (var s = 0; s < b.InL[0].Length; s++) { b.InL[0][s] = 0f; b.InR[0][s] = 0f; }
-        for (var s = 0; s < 200; s++)
+        var fillSamples = b.InL[0].Length / 2;
+        for (var s = 0; s < fillSamples; s++)
         {
             var v = 0.8f * MathF.Sin(2 * MathF.PI * s / 48f);
             b.InL[0][s] = v;
             b.InR[0][s] = v;
         }
 
-        var stepBefore = MathF.Abs(b.InL[0][200] - b.InL[0][199]);
+        var stepBefore = MathF.Abs(b.InL[0][fillSamples] - b.InL[0][fillSamples - 1]);
 
         MixEngine.MixBlock(
             MixEngine.BlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,

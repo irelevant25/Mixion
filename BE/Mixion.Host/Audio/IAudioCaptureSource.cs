@@ -24,8 +24,35 @@ public interface IAudioCaptureSource : IDisposable
     /// <summary>Sample rate of the frames delivered into <see cref="Ring"/>. Must match all other engine sources.</summary>
     int SampleRate { get; }
 
+    /// <summary>
+    /// Source channel count before our mono down-mix. Reflects the device's
+    /// mix format (or, for process loopback, the synthetic format we
+    /// requested). Display-only — the engine's internal bus is mono.
+    /// </summary>
+    int SourceChannels { get; }
+
+    /// <summary>
+    /// Source bit depth before our float conversion. Same display-only
+    /// caveat — the engine works in 32-bit float internally.
+    /// </summary>
+    int BitsPerSample { get; }
+
     /// <summary>Mono float ring the source writes into; the mix thread reads from here.</summary>
     RingBuffer Ring { get; }
+
+    /// <summary>
+    /// Requested capture buffer in ms — the value we asked WASAPI for at
+    /// open time. Used by the latency estimator on the signal-flow page;
+    /// the OS may round up under the hood, but this is the configured floor.
+    /// </summary>
+    int BufferMilliseconds { get; }
+
+    /// <summary>
+    /// Fired immediately after a fresh block is appended to <see cref="Ring"/>.
+    /// Lets the mix loop replace its 1 ms polling sleep with a cooperative
+    /// wait — capture handlers signal, mix loop wakes, no scheduler tax.
+    /// </summary>
+    event EventHandler? DataReady;
 
     /// <summary>Begin delivering frames. Idempotent for repeated calls.</summary>
     void Start();

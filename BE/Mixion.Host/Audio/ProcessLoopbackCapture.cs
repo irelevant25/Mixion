@@ -62,7 +62,11 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
     public string Id           { get; }
     public string FriendlyName { get; }
     public int    SampleRate   => _sampleRate;
+    public int    SourceChannels => _format.Channels;
+    public int    BitsPerSample  => _format.BitsPerSample;
     public RingBuffer Ring     => _ring;
+    public int    BufferMilliseconds => (int)(BufferDurationHns / 10_000);
+    public event EventHandler? DataReady;
 
     /// <summary>Process id this capture was bound to. Public for diagnostics.</summary>
     public int ProcessId => _processId;
@@ -332,6 +336,7 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
                         var written = WaveFormatX.ConvertToMono(
                             _scratchBytes.AsSpan(0, byteCount), _format, _scratchMono);
                         _ring.Write(_scratchMono.AsSpan(0, written));
+                        DataReady?.Invoke(this, EventArgs.Empty);
                     }
                 }
                 finally

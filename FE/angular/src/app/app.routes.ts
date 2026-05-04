@@ -15,4 +15,11 @@ export const routes: Routes = [
         (m) => m.PresetManagerComponent,
       ),
   },
+  {
+    path: 'signal-flow',
+    loadComponent: () =>
+      import('./features/signal-flow/signal-flow.component').then(
+        (m) => m.SignalFlowComponent,
+      ),
+  },
 ];

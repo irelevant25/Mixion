@@ -39,6 +39,7 @@ interface Health {
         <nav>
           <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Mixer</a>
           <a routerLink="/presets" routerLinkActive="active">Presets</a>
+          <a routerLink="/signal-flow" routerLinkActive="active">Signal flow</a>
         </nav>
         <app-connection-banner />
       </header>

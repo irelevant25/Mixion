@@ -31,8 +31,14 @@ public sealed record SpectrumTapConfig(SpectrumFrame.BusTag Bus, int Channel);
 /// </summary>
 public sealed class MixEngine : IDisposable
 {
-    /// <summary>Mono frames processed per mix tick.</summary>
-    public const int BlockFrames = 256;
+    /// <summary>
+    /// Mono frames processed per mix tick. 128 frames ≈ 2.7 ms @ 48 kHz —
+    /// matches a single shared-mode WASAPI engine period, so the tick
+    /// rhythm aligns with the OS instead of straddling two periods (which
+    /// would add ~5 ms of "always one period behind" latency on the render
+    /// side).
+    /// </summary>
+    public const int BlockFrames = 128;
 
     /// <summary>
     /// Per-sample one-pole coefficient for the gain smoother. Picked so that
@@ -62,7 +68,7 @@ public sealed class MixEngine : IDisposable
     // greyed-out strip for a slot whose device the user unplugged or whose
     // app was closed, without losing the slot binding.
     private readonly IAudioCaptureSource?[] _captures;
-    private readonly RenderDevice?[]        _renders;
+    private readonly IRenderDevice?[]        _renders;
     private readonly LoopbackCapture?[]  _renderLoopbacks; // parallel to _renders; held open but no longer used for metering.
 
     /// <summary>Per-input mono block straight off the capture ring (post DSP, pre pan).</summary>
@@ -123,9 +129,30 @@ public sealed class MixEngine : IDisposable
     private Thread?     _thread;
     private volatile bool _running;
 
+    /// <summary>
+    /// Set by every capture's <see cref="IAudioCaptureSource.DataReady"/>
+    /// handler whenever a fresh block lands in the ring buffer; waited on by
+    /// the mix loop in place of a 1 ms polling sleep. AutoReset = the loop
+    /// consumes one signal per wake; if multiple captures fire between wakes
+    /// we still only wake once (which is fine — Tick checks all rings).
+    /// A 2 ms timeout backstops the wait so a missed signal can never
+    /// stall the loop indefinitely.
+    /// </summary>
+    private readonly AutoResetEvent _captureWake = new(initialState: false);
+
+    /// <summary>
+    /// Optional one-shot impulse measurement probe. When non-null, the mix
+    /// loop replaces the chosen output's block with a test burst and copies
+    /// the chosen input's raw capture block into the probe's watch buffer
+    /// — <see cref="MeasureRouteLatency"/> handler awaits + decodes the
+    /// result. Atomic exchange so the audio thread observes one coherent
+    /// reference per tick.
+    /// </summary>
+    private LatencyProbe? _probe;
+
     public int SampleRate { get; }
     public IReadOnlyList<IAudioCaptureSource?> Captures => _captures;
-    public IReadOnlyList<RenderDevice?>        Renders  => _renders;
+    public IReadOnlyList<IRenderDevice?>        Renders  => _renders;
 
     /// <summary>
     /// Per-channel-side peak / RMS aggregator. Layout is
@@ -157,6 +184,19 @@ public sealed class MixEngine : IDisposable
     public RingBuffer SpectrumBuffer => _spectrumBuffer;
 
     /// <summary>
+    /// Install (or clear) the round-trip latency probe. Pass <c>null</c> to
+    /// abort an in-flight measurement. The audio thread picks up the new
+    /// reference on its next tick. Caller is responsible for awaiting
+    /// <see cref="LatencyProbe.Completion"/> and clearing the probe when
+    /// done — typically from <c>measureRouteLatency</c> in
+    /// <c>LatencyHandlers</c>.
+    /// </summary>
+    public void SetMeasurementProbe(LatencyProbe? probe)
+    {
+        Interlocked.Exchange(ref _probe, probe);
+    }
+
+    /// <summary>
     /// Last-block gain reduction (dB, ≥ 0) per input compressor. Inputs are
     /// mono so a single GR per channel.
     /// </summary>
@@ -178,7 +218,7 @@ public sealed class MixEngine : IDisposable
 
     public MixEngine(
         IEnumerable<IAudioCaptureSource?> captures,
-        IEnumerable<RenderDevice?>        renders,
+        IEnumerable<IRenderDevice?>        renders,
         MixerState                        initialState,
         ILogger                           logger,
         IEnumerable<LoopbackCapture?>?    renderLoopbacks = null)
@@ -314,6 +354,21 @@ public sealed class MixEngine : IDisposable
         // slots (mono → both sides equal); each render takes 2 slots
         // (actual L and R post-mix). 33 ms window → ~30 Hz publish.
         _meters = new MeterAggregator((_captures.Length + _renders.Length) * 2, SampleRate);
+
+        // Event-driven mix wake: every capture pings _captureWake the moment
+        // it appends data, so the mix loop runs as soon as a block is
+        // available instead of polling on a 1 ms timer (which is actually
+        // 1–15 ms depending on the host timer resolution).
+        foreach (var c in _captures)
+        {
+            if (c is null) continue;
+            c.DataReady += OnCaptureDataReady;
+        }
+    }
+
+    private void OnCaptureDataReady(object? sender, EventArgs e)
+    {
+        _captureWake.Set();
     }
 
     /// <summary>
@@ -321,7 +376,7 @@ public sealed class MixEngine : IDisposable
     /// engine sample rate when some slots are placeholders for missing
     /// devices.
     /// </summary>
-    private static IAudioDevice? FirstReal(IAudioCaptureSource?[] captures, RenderDevice?[] renders)
+    private static IAudioDevice? FirstReal(IAudioCaptureSource?[] captures, IRenderDevice?[] renders)
     {
         foreach (var c in captures) if (c is not null) return new CaptureAdapter(c);
         foreach (var r in renders)  if (r is not null) return new RenderAdapter(r);
@@ -333,7 +388,7 @@ public sealed class MixEngine : IDisposable
     {
         public int SampleRate => Inner.SampleRate;
     }
-    private sealed record RenderAdapter(RenderDevice Inner) : IAudioDevice
+    private sealed record RenderAdapter(IRenderDevice Inner) : IAudioDevice
     {
         public int SampleRate => Inner.SampleRate;
     }
@@ -382,9 +437,15 @@ public sealed class MixEngine : IDisposable
     public void Dispose()
     {
         Stop();
+        foreach (var c in _captures)
+        {
+            if (c is null) continue;
+            c.DataReady -= OnCaptureDataReady;
+        }
         foreach (var l in _renderLoopbacks) l?.Dispose();
         foreach (var r in _renders)         r?.Dispose();
         foreach (var c in _captures)        c?.Dispose();
+        _captureWake.Dispose();
     }
 
     private void Loop()
@@ -396,7 +457,11 @@ public sealed class MixEngine : IDisposable
 
             while (_running)
             {
-                if (!Tick()) Thread.Sleep(1);
+                if (Tick()) continue;
+                // Wait for the next capture event with a short backstop —
+                // protects against a missed Set or a silent device that
+                // never delivers, without burning a thread on a tight loop.
+                _captureWake.WaitOne(2);
             }
         }
         catch (Exception ex)
@@ -432,6 +497,13 @@ public sealed class MixEngine : IDisposable
                 Array.Clear(_inputBlocksMono[i]);
         }
 
+        // Latency probe — watch side. Read once per tick; apply to both the
+        // capture-watch (here) and the inject (after MixBlock) so they're
+        // anchored to the same probe instance.
+        var probe = Volatile.Read(ref _probe);
+        if (probe is not null)
+            ProbeWatchInput(probe);
+
         // BE-050: meter inputs *before* DSP. Inputs are mono so both L and
         // R meter slots receive the same block.
         for (var i = 0; i < _captures.Length; i++)
@@ -442,6 +514,7 @@ public sealed class MixEngine : IDisposable
 
         // BE-081: spectrum tap for an input channel — pre-DSP raw mic
         // signal so the FE's EQ overlay reflects what's hitting the EQ.
+        // (Latency probe pulls from this same pre-DSP point above.)
         var spectrumTap = Volatile.Read(ref _spectrumTap);
         if (spectrumTap is { Bus: SpectrumFrame.BusTag.Input } inTap
             && (uint)inTap.Channel < (uint)_captures.Length)
@@ -510,6 +583,13 @@ public sealed class MixEngine : IDisposable
             ApplyOutputPan(o, bL, bR);
         }
 
+        // Latency probe — inject side. Sits AFTER per-output DSP so the
+        // burst hits the render ring unaltered (no EQ/compressor mauls the
+        // detection peak). Wipes the chosen output's block first so user
+        // audio doesn't bleed into the test signal during the watch window.
+        if (probe is not null)
+            ProbeInjectOutput(probe);
+
         // BE-080: meter outputs from the post-mix L/R blocks. (Loopback
         // metering is on hold while the loopback path is still mono — the
         // post-mix blocks are what reflect the live pan/EQ/compressor
@@ -542,6 +622,57 @@ public sealed class MixEngine : IDisposable
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Latency probe — capture watch. Append this tick's pre-DSP input
+    /// block for the watched channel into the probe's watch buffer until
+    /// the buffer is full, then complete the awaitable so the RPC handler
+    /// scans for the burst and reports the result.
+    /// </summary>
+    private void ProbeWatchInput(LatencyProbe probe)
+    {
+        if ((uint)probe.WatchInputIndex >= (uint)_captures.Length) return;
+
+        var src       = _inputBlocksMono[probe.WatchInputIndex];
+        var dst       = probe.WatchBuffer;
+        var remaining = dst.Length - probe.WatchPosition;
+        if (remaining <= 0) return;
+
+        var toCopy = Math.Min(BlockFrames, remaining);
+        Array.Copy(src, 0, dst, probe.WatchPosition, toCopy);
+        probe.WatchPosition += toCopy;
+
+        if (probe.WatchPosition >= dst.Length)
+            probe.Completion.TrySetResult();
+    }
+
+    /// <summary>
+    /// Latency probe — render inject. Wipes the chosen output's stereo
+    /// block (so other inputs in the matrix don't bleed audible material
+    /// into the test signal) and copies the next slice of the burst on
+    /// top. Once the burst is exhausted the output stays silent for the
+    /// remainder of the measurement window — that's intentional: it gives
+    /// the watch buffer a clean ambient floor against which the burst
+    /// arrival is unambiguous.
+    /// </summary>
+    private void ProbeInjectOutput(LatencyProbe probe)
+    {
+        if ((uint)probe.InjectOutputIndex >= (uint)_renders.Length) return;
+
+        var bL = _outputBlocksL[probe.InjectOutputIndex];
+        var bR = _outputBlocksR[probe.InjectOutputIndex];
+        Array.Clear(bL);
+        Array.Clear(bR);
+
+        var burst     = probe.Burst;
+        var remaining = burst.Length - probe.BurstPosition;
+        if (remaining <= 0) return;
+
+        var toCopy = Math.Min(BlockFrames, remaining);
+        Array.Copy(burst, probe.BurstPosition, bL, 0, toCopy);
+        Array.Copy(burst, probe.BurstPosition, bR, 0, toCopy);
+        probe.BurstPosition += toCopy;
     }
 
     /// <summary>Reconfigure the input DSP chain when the channel record reference changed.</summary>
