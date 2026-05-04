@@ -82,7 +82,7 @@ npm start                # ng serve --proxy-config proxy.conf.json --port 4200
 ```
 
 Because the host's port is random per launch, dev workflow is:
-1. `dotnet run` in `BE/VoicemeterAlt.Host` and **read the printed port**.
+1. `dotnet run` in `BE/Mixion.Host` and **read the printed port**.
 2. Update `proxy.conf.json` with that port, OR start the host with `--port 54812` (fixed) for stable dev.
 3. `npm start` in `FE/angular`.
 
@@ -134,7 +134,7 @@ Each task is scoped to a single PR-sized unit. **Acceptance** says how to know i
 
 | ID | Task | Files | Acceptance |
 |---|---|---|---|
-| FE-001 | Init Angular workspace `voicemeter-alt` (standalone, signals, no zone.js if Angular version supports it) | `FE/angular/` | `ng build` produces `dist/voicemeter-alt/browser/` |
+| FE-001 | Init Angular workspace `mixion` (standalone, signals, no zone.js if Angular version supports it) | `FE/angular/` | `ng build` produces `dist/mixion/browser/` |
 | FE-002 | `proxy.conf.json` for dev: forwards `/api` and `/ws` to a configurable host port | `FE/angular/proxy.conf.json` | `npm start` proxies cleanly to a running host |
 | FE-003 | `SessionService` with `init(): Promise<void>` that calls `GET /api/session`, stores `token` and `mixerStateInit` | `core/session.service.ts` | Unit test mocks `fetch`, asserts service state |
 | FE-004 | `APP_INITIALIZER` runs `SessionService.init()` and `IpcService.connect(token)` before bootstrap completes | `app.config.ts` | App reaches `connected` status before first render |
@@ -223,7 +223,7 @@ The tasks below are quality-of-life follow-ups for when the BE adds dynamic add/
 |---|---|---|---|
 | FE-060 | Reconnect logic: exponential backoff (1 s, 2 s, 4 s, capped at 30 s); on reconnect, re-call `getState()` and re-`subscribe()` | `core/ipc.service.ts` | Brief host restart is transparent: meters resume, state re-hydrates |
 | FE-061 | "Host stopped" banner when WS drops; auto-hides on reconnect | `shell/connection-banner.component.ts` | Stopping the host shows banner; restarting hides it |
-| FE-062 | Production build wired into `build.ps1`: `ng build --configuration=production`; output goes to `dist/voicemeter-alt/browser/` | `FE/angular/angular.json` | `build.ps1` consumes the `browser/` subfolder when copying into `BE/.../wwwroot` |
+| FE-062 | Production build wired into `build.ps1`: `ng build --configuration=production`; output goes to `dist/mixion/browser/` | `FE/angular/angular.json` | `build.ps1` consumes the `browser/` subfolder when copying into `BE/.../wwwroot` |
 | FE-063 | Verify SPA fallback works: navigating directly to `/some/route` returns `index.html` and Angular's router takes over | `app.routes.ts` | Refreshing on `/preset-manager` doesn't 404 |
 | FE-064 | Set `<base href="./">` (relative) so the SPA works regardless of port and root path | `src/index.html` | Asset URLs resolve correctly when served from any host port |
 

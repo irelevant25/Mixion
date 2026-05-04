@@ -1,10 +1,10 @@
-# VoicemeterAlt
+# Mixion
 
-A personal Voicemeter Potato alternative for Windows 11. User-mode audio mixer/router that runs on top of VB-CABLE / VAC, with a browser-based UI served by the same Windows process that runs the audio engine.
+User-mode audio mixer/router that runs on top of VB-CABLE / VAC, with a browser-based UI served by the same Windows process that runs the audio engine.
 
 > **What this is:** a single Windows .exe that runs an audio mixer, exposes a routing matrix + channel strips + VU meters in your browser at `http://127.0.0.1:<port>/`, and persists presets as JSON.
 >
-> **What this is NOT:** a full Voicemeter replacement. This app does **not** install its own virtual audio devices. Other apps will not see "VoicemeterAlt Input" in their device list. Instead, you route apps to VB-CABLE Input (via Windows audio settings or app-level output selection), and our mixer pulls from VB-CABLE Output. Shipping a kernel virtual audio driver on Windows 11 requires an EV code-signing certificate, which is out of scope for this project.
+> **What this is NOT:** This app does **not** install its own virtual audio devices. Other apps will not see "Mixion Input" in their device list. Instead, you route apps to VB-CABLE Input (via Windows audio settings or app-level output selection), and our mixer pulls from VB-CABLE Output. Shipping a kernel virtual audio driver on Windows 11 requires an EV code-signing certificate, which is out of scope for this project.
 
 ---
 
@@ -52,26 +52,29 @@ Single-process model. The .NET 8 host runs the audio engine, an HTTP server (Kes
 | IPC | **WebSocket on same origin (`/ws`)**, JSON-RPC 2.0 (text) + binary telemetry frames | Single transport, simple, fast enough |
 | Auth | **HMAC token** issued by `GET /api/session`; required on WS connect | Prevents other local processes from connecting |
 | Meters | **Canvas + requestAnimationFrame** | DOM/SVG can't sustain 16 meters at 60 fps without CD pressure |
-| Persistence | **JSON files** in `%LOCALAPPDATA%\VoicemeterAlt\presets\` | Trivial, human-editable |
+| Persistence | **JSON files** in `%LOCALAPPDATA%\Mixion\presets\` | Trivial, human-editable |
 
 ---
 
 ## Repository layout
 
 ```
-Voicemeter\
+Mixion\
 ├── README.md                       # this file
 ├── build.ps1                       # one-shot build script (-Mode portable | minimal)
+├── icon.png / icon - no bg.png     # source artwork for the app icon
 ├── BE\
 │   ├── README.md                   # backend tasks (.NET host)
-│   └── VoicemeterAlt.Host\         # .NET 8 audio engine + HTTP/WS server (created in M1)
+│   └── Mixion.Host\                # .NET 8 audio engine + HTTP/WS server (created in M1)
+│       ├── Resources\app.ico       # multi-resolution .exe / tray / taskbar icon
 │       └── wwwroot\                # populated by build.ps1 from FE/angular/dist before publish
 ├── FE\
 │   ├── README.md                   # frontend tasks (Angular)
 │   └── angular\                    # Angular workspace (created in M1)
+│       └── public\                 # favicon.ico + logo.png served as Angular assets
 └── output\
     ├── README.md                   # describes what lands here
-    └── VoicemeterAlt.exe           # produced by build.ps1
+    └── Mixion.exe                  # produced by build.ps1
 ```
 
 See [BE/README.md](BE/README.md) for backend tasks and [FE/README.md](FE/README.md) for frontend tasks.
@@ -94,7 +97,7 @@ Two terminals during development. Angular runs under `ng serve` with HMR; it pro
 
 ```powershell
 # Terminal 1 — audio host (HTTP + WS + audio)
-cd BE/VoicemeterAlt.Host
+cd BE/Mixion.Host
 dotnet run
 # Listens on http://127.0.0.1:<port> (printed at startup).
 # Visit that URL directly to use the production-style UI from embedded files.
@@ -106,13 +109,13 @@ npm start          # ng serve --proxy-config proxy.conf.json
 # proxy.conf.json forwards /api/* and /ws to the .NET host port
 ```
 
-In production (post-`build.ps1`), there is no `ng serve` — the user double-clicks `VoicemeterAlt.exe` and the .NET host serves Angular from its embedded `wwwroot`.
+In production (post-`build.ps1`), there is no `ng serve` — the user double-clicks `Mixion.exe` and the .NET host serves Angular from its embedded `wwwroot`.
 
 ---
 
 ## Build & ship — `build.ps1`
 
-A single PowerShell script at the repo root produces one .exe in [output/](output/). It builds Angular for production, copies the bundle into `BE/VoicemeterAlt.Host/wwwroot/`, then publishes the .NET host with `wwwroot` embedded into the assembly.
+A single PowerShell script at the repo root produces one .exe in [output/](output/). It builds Angular for production, copies the bundle into `BE/Mixion.Host/wwwroot/`, then publishes the .NET host with `wwwroot` embedded into the assembly.
 
 ```powershell
 # default: self-contained portable .exe (~70 MB, runs anywhere on Windows 10+)
@@ -132,17 +135,17 @@ Modes:
 
 | `-Mode`   | Produces                                                           | Size  | Requires on target |
 |-----------|--------------------------------------------------------------------|-------|--------------------|
-| `portable`| `output/VoicemeterAlt.exe` — self-contained single file            | ~70 MB | Nothing — just Windows |
-| `minimal` | `output/VoicemeterAlt.exe` — framework-dependent single file       | ~5 MB  | .NET 8 Runtime (`winget install Microsoft.DotNet.Runtime.8`) |
+| `portable`| `output/Mixion.exe` — self-contained single file            | ~70 MB | Nothing — just Windows |
+| `minimal` | `output/Mixion.exe` — framework-dependent single file       | ~5 MB  | .NET 8 Runtime (`winget install Microsoft.DotNet.Runtime.8`) |
 
 The script:
 1. Checks prerequisites (`dotnet`, `node`, `npm`).
-2. `cd FE/angular && npm ci && npm run build -- --configuration=production` → `FE/angular/dist/voicemeter-alt/browser/`.
-3. Copies the Angular bundle into `BE/VoicemeterAlt.Host/wwwroot/`.
-4. `dotnet publish BE/VoicemeterAlt.Host -c Release -r win-x64 --self-contained:<true|false> -p:PublishSingleFile=true`.
-5. Copies the resulting `VoicemeterAlt.exe` into `output/`.
+2. `cd FE/angular && npm ci && npm run build -- --configuration=production` → `FE/angular/dist/mixion/browser/`.
+3. Copies the Angular bundle into `BE/Mixion.Host/wwwroot/`.
+4. `dotnet publish BE/Mixion.Host -c Release -r win-x64 --self-contained:<true|false> -p:PublishSingleFile=true`.
+5. Copies the resulting `Mixion.exe` into `output/`.
 
-The Angular files travel inside the assembly as embedded resources (via `ManifestEmbeddedFileProvider`), so `output/VoicemeterAlt.exe` is genuinely a single file with no companion `wwwroot/` folder.
+The Angular files travel inside the assembly as embedded resources (via `ManifestEmbeddedFileProvider`), so `output/Mixion.exe` is genuinely a single file with no companion `wwwroot/` folder.
 
 ---
 

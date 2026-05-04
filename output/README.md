@@ -7,14 +7,14 @@ Build artifact produced by [`../build.ps1`](../build.ps1). This folder is genera
 ```
 output/
 ├── README.md            # this file (kept across builds)
-└── VoicemeterAlt.exe    # the entire app: audio engine + HTTP/WS server + Angular UI
+└── Mixion.exe    # the entire app: audio engine + HTTP/WS server + Angular UI
 ```
 
 That single `.exe` is the entire app. Angular static files are embedded as resources inside the assembly via `ManifestEmbeddedFileProvider`, so there's no companion `wwwroot/` folder to ship alongside.
 
 ## What you get
 
-Both build modes produce **one file**: `VoicemeterAlt.exe`. They differ only in size and runtime requirements:
+Both build modes produce **one file**: `Mixion.exe`. They differ only in size and runtime requirements:
 
 | `-Mode`   | Size  | Requires on target machine          |
 |-----------|-------|-------------------------------------|
@@ -23,10 +23,10 @@ Both build modes produce **one file**: `VoicemeterAlt.exe`. They differ only in 
 
 ## Runtime behavior
 
-When the user double-clicks `VoicemeterAlt.exe`:
+When the user double-clicks `Mixion.exe`:
 
 1. **Driver check** — enumerates WASAPI endpoints. If VB-CABLE isn't found, a native Windows dialog appears:
-   > *VB-CABLE driver not detected. VoicemeterAlt requires VB-CABLE to provide virtual audio endpoints. Install it from https://vb-audio.com/Cable/ and relaunch the app.*
+   > *VB-CABLE driver not detected. Mixion requires VB-CABLE to provide virtual audio endpoints. Install it from https://vb-audio.com/Cable/ and relaunch the app.*
    The user clicks OK, the process exits cleanly. No web server starts, no audio engine starts.
 2. **Found** — the host:
    - Binds Kestrel to `127.0.0.1:<random free port>`.

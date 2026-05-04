@@ -10,8 +10,8 @@ See the [root README](../README.md) for the overall architecture.
 
 ```
 BE/
-├── VoicemeterAlt.Host/
-│   ├── VoicemeterAlt.Host.csproj
+├── Mixion.Host/
+│   ├── Mixion.Host.csproj
 │   ├── Program.cs                    # entry: driver check → build WebApplication → start audio
 │   ├── wwwroot/                      # populated by build.ps1 from FE/angular/dist; embedded into assembly
 │   ├── Web/
@@ -62,7 +62,7 @@ BE/
 │   │   └── MessageBox.cs             # P/Invoke for user32!MessageBoxW (driver-missing dialog)
 │   └── Shell/
 │       └── BrowserLauncher.cs        # Process.Start("...") with UseShellExecute=true
-└── VoicemeterAlt.Host.Tests/         # xUnit
+└── Mixion.Host.Tests/         # xUnit
     ├── MixEngineTests.cs
     ├── RoutingMatrixTests.cs
     ├── SoloLogicTests.cs
@@ -95,7 +95,7 @@ BE/
     <ImplicitUsings>enable</ImplicitUsings>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
-    <AssemblyName>VoicemeterAlt</AssemblyName>
+    <AssemblyName>Mixion</AssemblyName>
     <!-- WinExe → no console flashes on double-click; the tray "Console"
          menu item allocates / shows a hidden console on demand. -->
     <OutputType>WinExe</OutputType>
@@ -117,19 +117,19 @@ BE/
 ## Run / debug
 
 ```powershell
-cd BE/VoicemeterAlt.Host
+cd BE/Mixion.Host
 dotnet run --port 54812
 # 1. Probes WASAPI for VB-CABLE; if missing, shows MessageBox and exits.
 # 2. Binds Kestrel to 127.0.0.1:<random free port>.
 # 3. Starts audio engine.
 # 4. Logs the URL (e.g., http://127.0.0.1:54812/) and opens the default browser unless --no-browser.
-# 5. Logs go to %LOCALAPPDATA%\VoicemeterAlt\logs\host-*.log.
+# 5. Logs go to %LOCALAPPDATA%\Mixion\logs\host-*.log.
 ```
 
 ### Hot reload
 
 ```powershell
-cd BE/VoicemeterAlt.Host
+cd BE/Mixion.Host
 dotnet watch run -- --port 54812 --no-browser
 # Rebuilds + restarts on .cs / .csproj changes. Anything after `--` is
 # forwarded to the host as CLI args. `--no-browser` is recommended so a fresh
@@ -151,7 +151,7 @@ dotnet watch run -- --port 54812 --no-browser
 
 ## Engine rebuild coordination
 
-Every engine teardown/rebuild — user Refresh, `removeProcessLoopback`, or the auto-rebind watchdog — funnels through [`EngineHost.RebuildAsync`](VoicemeterAlt.Host/Ipc/EngineHost.cs). A `SemaphoreSlim` serialises concurrent calls so two rebuilds can't race for the same WASAPI endpoints. The method snapshots current state, optionally transforms it (e.g. drop a removed channel), disposes the running engine, calls `EngineFactory.Build(seed)`, then publishes the new engine atomically.
+Every engine teardown/rebuild — user Refresh, `removeProcessLoopback`, or the auto-rebind watchdog — funnels through [`EngineHost.RebuildAsync`](Mixion.Host/Ipc/EngineHost.cs). A `SemaphoreSlim` serialises concurrent calls so two rebuilds can't race for the same WASAPI endpoints. The method snapshots current state, optionally transforms it (e.g. drop a removed channel), disposes the running engine, calls `EngineFactory.Build(seed)`, then publishes the new engine atomically.
 
 Two flavours:
 
@@ -173,7 +173,7 @@ There is intentionally no dedicated `addProcessLoopback` — `refreshDevices` al
 
 ## Auto-rebind on PID change (BE-106)
 
-[`ProcessHealthMonitor`](VoicemeterAlt.Host/Audio/ProcessHealthMonitor.cs) is an `IHostedService` that ticks every 3 seconds. It walks the active engine's captures, checks each `ProcessLoopbackCapture`'s PID against `Process.GetProcessById`, and if any has exited, calls `EngineHost.RebuildAsync` with no transform (auto-discover ON).
+[`ProcessHealthMonitor`](Mixion.Host/Audio/ProcessHealthMonitor.cs) is an `IHostedService` that ticks every 3 seconds. It walks the active engine's captures, checks each `ProcessLoopbackCapture`'s PID against `Process.GetProcessById`, and if any has exited, calls `EngineHost.RebuildAsync` with no transform (auto-discover ON).
 
 Because `ProcessLoopbackCapture.Id` is `process:<name>` (not PID-bound), `EngineFactory.Build` resolves the channel against the new enumeration by name — Chrome closes and reopens, the new PID's PLC slots into the same channel id, and the user's slot binding survives unchanged. Total perceived delay: ~3 s of "channel red" before it goes green again. No user action required.
 
@@ -185,7 +185,7 @@ The watchdog never crashes the host — exceptions in the loop log a warning and
 
 Devices and audio-producing processes can come and go after the host starts (user plugs in a USB mic, launches VLC, etc.). Restarting the host is heavy-handed; the FE can drive a runtime refresh instead.
 
-**RPC**: `refreshDevices` (no params). Returns the new `MixerStateDto`. The handler in [`Ipc/Handlers/DeviceHandlers.cs`](VoicemeterAlt.Host/Ipc/Handlers/DeviceHandlers.cs) snapshots the current state, disposes the running engine, calls [`EngineFactory.Build(previousState)`](VoicemeterAlt.Host/Audio/EngineFactory.cs) to construct a new one, and publishes it through `EngineHost`. There's a brief audio gap (~100–300 ms) while WASAPI re-opens — acceptable for a user-driven action.
+**RPC**: `refreshDevices` (no params). Returns the new `MixerStateDto`. The handler in [`Ipc/Handlers/DeviceHandlers.cs`](Mixion.Host/Ipc/Handlers/DeviceHandlers.cs) snapshots the current state, disposes the running engine, calls [`EngineFactory.Build(previousState)`](Mixion.Host/Audio/EngineFactory.cs) to construct a new one, and publishes it through `EngineHost`. There's a brief audio gap (~100–300 ms) while WASAPI re-opens — acceptable for a user-driven action.
 
 **Channel-identity discipline**:
 
@@ -194,19 +194,19 @@ Devices and audio-producing processes can come and go after the host starts (use
 - A channel id present in the previous state but no longer enumerable stays in the new state with `Available = false` and a `null` backing source. The mix engine treats null capture/render slots as silent (input) or discard (output); the FE renders the strip in red so the user knows audio isn't flowing without losing their gain/mute/EQ/route settings.
 - Brand-new devices and processes are appended after the preserved channels. The routing matrix grows with `false` in the new positions, leaving existing routes untouched.
 
-**Engine null-tolerance**: [`MixEngine`](VoicemeterAlt.Host/Audio/MixEngine.cs) takes `IAudioCaptureSource?[]` and `RenderDevice?[]`. The hot path checks for null per slot — silent input, no-op render. The single-source-of-truth `MixerState` still drives everything; missing channels just don't have a backing device this tick.
+**Engine null-tolerance**: [`MixEngine`](Mixion.Host/Audio/MixEngine.cs) takes `IAudioCaptureSource?[]` and `RenderDevice?[]`. The hot path checks for null per slot — silent input, no-op render. The single-source-of-truth `MixerState` still drives everything; missing channels just don't have a backing device this tick.
 
 ---
 
 ## Per-process loopback capture
 
-Beyond physical mics and virtual cables, the engine can pull audio **directly from a single Windows process** — no virtual cable in the chain at all. This is the Win10 build 20348+ / Win11 process-loopback API (`ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`), wrapped in [`Audio/ProcessLoopbackCapture.cs`](VoicemeterAlt.Host/Audio/ProcessLoopbackCapture.cs). NAudio doesn't expose this variant, so the class drives the COM activation flow directly: native `IAudioClient` / `IAudioCaptureClient` interop, an `IActivateAudioInterfaceCompletionHandler` CCW, and a dedicated capture thread that drains packets into the same `RingBuffer` the rest of the engine uses.
+Beyond physical mics and virtual cables, the engine can pull audio **directly from a single Windows process** — no virtual cable in the chain at all. This is the Win10 build 20348+ / Win11 process-loopback API (`ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`), wrapped in [`Audio/ProcessLoopbackCapture.cs`](Mixion.Host/Audio/ProcessLoopbackCapture.cs). NAudio doesn't expose this variant, so the class drives the COM activation flow directly: native `IAudioClient` / `IAudioCaptureClient` interop, an `IActivateAudioInterfaceCompletionHandler` CCW, and a dedicated capture thread that drains packets into the same `RingBuffer` the rest of the engine uses.
 
 **Why it matters**: the user can route Chrome → headphones + a "fake mic" virtual cable using only **one** physical cable pair, instead of needing a second cable just to get Chrome's audio out of the OS. Voicemeeter Banana / Potato can't do this — it requires every source to enter via a virtual cable.
 
 **Lifecycle**:
 
-1. At startup, [`AudioProcessEnumerator`](VoicemeterAlt.Host/Audio/AudioProcessEnumerator.cs) walks every active render endpoint's `IAudioSessionManager2`, dedupes the resulting sessions by PID (system PID 0 and the host's own PID are filtered out), and resolves each PID to a process name via `Process.GetProcessById`.
+1. At startup, [`AudioProcessEnumerator`](Mixion.Host/Audio/AudioProcessEnumerator.cs) walks every active render endpoint's `IAudioSessionManager2`, dedupes the resulting sessions by PID (system PID 0 and the host's own PID are filtered out), and resolves each PID to a process name via `Process.GetProcessById`.
 2. `Program.OpenProcessLoopbacks` opens a `ProcessLoopbackCapture` per process and adds it to the engine's capture list with a friendly name like `"chrome (app)"`. The channel id format is `process:<pid>:<name>`.
 3. Loopbacks are first-class `IAudioCaptureSource` instances — they appear in `MixerState.Inputs` next to physical captures and the FE wires them through the existing slot-config dialog, no extra UI required.
 
@@ -266,7 +266,7 @@ Tasks are scoped to be picked up one at a time. **Acceptance** says how to know 
 
 | ID | Task | Files | Acceptance |
 |---|---|---|---|
-| BE-001 | Init solution + ASP.NET Core web project, add NAudio + EmbeddedFileProvider packages | `VoicemeterAlt.Host.csproj`, `Program.cs` | `dotnet run` starts a `WebApplication`, prints "host alive", responds 200 to `/api/health` |
+| BE-001 | Init solution + ASP.NET Core web project, add NAudio + EmbeddedFileProvider packages | `Mixion.Host.csproj`, `Program.cs` | `dotnet run` starts a `WebApplication`, prints "host alive", responds 200 to `/api/health` |
 | BE-002 | `DeviceEnumerator`: enumerate WASAPI capture & render endpoints, return DTOs with id, friendly name, interface, mix format | `Audio/DeviceEnumerator.cs` | Unit test: returns at least one device on the dev machine |
 | BE-003 | `DriverProbe`: scan endpoints, return `{ found, matchedDevice? }`. Friendly-name must **start with** `"CABLE Input"` or `"CABLE Output"` (case-insensitive, with a whitespace or `(` boundary) so only the basic single-cable VB-CABLE qualifies — VB-CABLE A+B (`CABLE-A Input`), C+D, and Voicemeeter VAIOs are explicitly rejected | `Audio/DriverProbe.cs`, `DriverProbeTests.cs` | Unit tests cover: basic render endpoint, basic capture endpoint, A+B/C+D rejected, Voicemeeter VAIOs rejected, basic-alongside-higher-tier accepted, empty/non-VB rejected, case-insensitive |
 | BE-004 | `Interop/MessageBox.cs`: P/Invoke `user32.dll!MessageBoxW` with `MB_OK \| MB_ICONERROR` | `Interop/MessageBox.cs` | Calling it shows a real Windows dialog |
@@ -330,7 +330,7 @@ Tasks are scoped to be picked up one at a time. **Acceptance** says how to know 
 | ID | Task | Files | Acceptance |
 |---|---|---|---|
 | BE-060 | `Preset.cs` DTO with `schemaVersion: 1` field; (de)serialized via `System.Text.Json` source-gen | `State/Preset.cs` | JSON file readable + parseable round-trip |
-| BE-061 | `PresetStore`: list, save, load, delete in `%LOCALAPPDATA%\VoicemeterAlt\presets\*.json` | `State/PresetStore.cs` | RPC-driven save creates a file; load returns its contents |
+| BE-061 | `PresetStore`: list, save, load, delete in `%LOCALAPPDATA%\Mixion\presets\*.json` | `State/PresetStore.cs` | RPC-driven save creates a file; load returns its contents |
 | BE-062 | Device re-resolution on load: presets store endpoint friendly name + interface name; find best match; warn on missing | `State/PresetStore.cs` | Unplugging a device and loading preset returns a structured warning, not an exception |
 | BE-063 | RPCs: `listPresets()`, `savePreset(name)`, `loadPreset(name)`, `deletePreset(name)` | `Ipc/Handlers/PresetHandlers.cs` | UI can drive full preset lifecycle |
 | BE-064 | Add `createdAt` to the preset DTO (nullable for legacy v1 files) and preserve it across overwrites; `savedAt` continues to track the last edit | `State/Preset.cs`, `State/PresetStore.cs` | Saving an existing preset bumps `savedAt` but leaves `createdAt` anchored to the original save |
@@ -340,7 +340,7 @@ Tasks are scoped to be picked up one at a time. **Acceptance** says how to know 
 
 ### M7 — Per-channel processing (gate / EQ / compressor / pan)
 
-A small fixed DSP chain per channel — applied to **both inputs and outputs** (Voicemeter-style strips/buses). Each stage is independently bypassable. Order on the input side: `gate → EQ → compressor`. Order on the output side: `EQ → compressor → pan`. EQ is a parametric biquad cascade — the UI shows a frequency-response curve with one draggable point per band on a log frequency axis (20 Hz - 20 kHz, x) and dB axis (±18 dB, y).
+A small fixed DSP chain per channel — applied to **both inputs and outputs** (strips/buses). Each stage is independently bypassable. Order on the input side: `gate → EQ → compressor`. Order on the output side: `EQ → compressor → pan`. EQ is a parametric biquad cascade — the UI shows a frequency-response curve with one draggable point per band on a log frequency axis (20 Hz - 20 kHz, x) and dB axis (±18 dB, y).
 
 | ID | Task | Files | Acceptance |
 |---|---|---|---|
@@ -377,12 +377,12 @@ Per-process WASAPI loopback so the user can route Chrome / Spotify / OBS / a gam
 
 | ID | Task | Files | Acceptance |
 |---|---|---|---|
-| BE-090 | Single-instance lock via named mutex (`Local\VoicemeterAlt`); second instance opens browser to existing URL and exits | `Program.cs` | Running twice opens a second browser tab; only one host process is alive |
-| BE-091 | Crash logging to `%LOCALAPPDATA%\VoicemeterAlt\logs\host-yyyyMMdd.log`; rotate at 10 MB | `Program.cs` | Forced exception writes a log entry with stack trace |
+| BE-090 | Single-instance lock via named mutex (`Local\Mixion`); second instance opens browser to existing URL and exits | `Program.cs` | Running twice opens a second browser tab; only one host process is alive |
+| BE-091 | Crash logging to `%LOCALAPPDATA%\Mixion\logs\host-yyyyMMdd.log`; rotate at 10 MB | `Program.cs` | Forced exception writes a log entry with stack trace |
 | BE-092 | Graceful shutdown on SIGTERM/console close: stop accepting connections → stop render → stop mix → stop capture | `Program.cs`, `MixEngine.cs` | No glitches in last 100 ms; logs confirm clean stop |
-| BE-093 | `Properties/PublishProfiles/win-x64-portable.pubxml` + `win-x64-minimal.pubxml` | `VoicemeterAlt.Host.csproj` | `dotnet publish -p:PublishProfile=...` produces a single .exe |
+| BE-093 | `Properties/PublishProfiles/win-x64-portable.pubxml` + `win-x64-minimal.pubxml` | `Mixion.Host.csproj` | `dotnet publish -p:PublishProfile=...` produces a single .exe |
 | BE-094 | `ping()` RPC for the UI to detect liveness | `Ipc/Handlers/SystemHandlers.cs` | UI gets a response in <50 ms |
-| BE-095 | Wire `wwwroot` embedding: `<EmbeddedResource Include="wwwroot\**\*" />` and `<GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>` | `VoicemeterAlt.Host.csproj` | Published .exe contains Angular files; no `wwwroot/` folder beside the .exe at runtime |
+| BE-095 | Wire `wwwroot` embedding: `<EmbeddedResource Include="wwwroot\**\*" />` and `<GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>` | `Mixion.Host.csproj` | Published .exe contains Angular files; no `wwwroot/` folder beside the .exe at runtime |
 
 ---
 
@@ -446,4 +446,4 @@ Binary telemetry frame layout (little-endian):
 - 1-hour stability test: zero glitches, flat memory after warm-up
 - BenchmarkDotNet memory diagnoser shows 0 B/tick on the mix path
 - All unit tests pass; solo logic covered
-- `build.ps1 -Mode portable` produces one `VoicemeterAlt.exe` < 80 MB containing the entire app
+- `build.ps1 -Mode portable` produces one `Mixion.exe` < 80 MB containing the entire app

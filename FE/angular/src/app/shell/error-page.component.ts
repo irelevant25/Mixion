@@ -7,8 +7,8 @@ import { ChangeDetectionStrategy, Component, input, output } from '@angular/core
     <section class="wrap">
       <h1>Host not reachable</h1>
       <p>
-        The VoicemeterAlt host is not responding on this origin. Make sure
-        <code>VoicemeterAlt.exe</code> (or <code>dotnet run</code>) is running
+        The Mixion host is not responding on this origin. Make sure
+        <code>Mixion.exe</code> (or <code>dotnet run</code>) is running
         and that this page is opened on the URL it printed.
       </p>
       @if (detail()) {

@@ -32,7 +32,10 @@ interface Health {
         (retry)="retry()" />
     } @else {
       <header>
-        <h1>VoicemeterAlt</h1>
+        <h1>
+          <img src="logo.png" alt="" width="28" height="28" class="logo" aria-hidden="true" />
+          <span>Mixion</span>
+        </h1>
         <nav>
           <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Mixer</a>
           <a routerLink="/presets" routerLinkActive="active">Presets</a>
@@ -107,7 +110,11 @@ interface Health {
               min-height: 100vh; box-sizing: border-box; }
       header { display: flex; align-items: center; gap: 1.5rem;
                border-bottom: 1px solid #333; padding-bottom: 0.75rem; }
-      h1 { font-size: 1.1rem; font-weight: 600; margin: 0; }
+      h1 { font-size: 1.1rem; font-weight: 600; margin: 0;
+           display: inline-flex; align-items: center; gap: 0.55rem; }
+      h1 .logo { display: block; width: 28px; height: 28px;
+                 border-radius: 6px; object-fit: contain;
+                 image-rendering: -webkit-optimize-contrast; }
       nav { display: flex; gap: 0.75rem; flex: 1; }
       nav a { color: #888; text-decoration: none; font-size: 13px;
               padding: 0.2rem 0.55rem; border-radius: 3px; }

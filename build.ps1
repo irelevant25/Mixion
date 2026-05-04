@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-  Build VoicemeterAlt and emit a single .exe to ./output.
+  Build Mixion and emit a single .exe to ./output.
 
 .DESCRIPTION
   Builds the Angular SPA for production, copies the bundle into
-  BE/VoicemeterAlt.Host/wwwroot/ (where it gets embedded into the assembly),
+  BE/Mixion.Host/wwwroot/ (where it gets embedded into the assembly),
   publishes the .NET 8 host as a single-file .exe, and lands the result
-  in ./output/VoicemeterAlt.exe.
+  in ./output/Mixion.exe.
 
   The driver-presence check (VB-CABLE) runs at app launch from inside the
   packaged binary, not here.
@@ -19,14 +19,14 @@
                Desktop Runtime to be installed on the target machine.
 
 .PARAMETER Clean
-  Delete ./output and BE/VoicemeterAlt.Host/wwwroot before building.
+  Delete ./output and BE/Mixion.Host/wwwroot before building.
 
 .PARAMETER Configuration
   .NET build configuration. Release (default) or Debug.
 
 .EXAMPLE
   .\build.ps1
-  Self-contained portable VoicemeterAlt.exe in ./output.
+  Self-contained portable Mixion.exe in ./output.
 
 .EXAMPLE
   .\build.ps1 -Mode minimal -Clean
@@ -48,10 +48,10 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root      = $PSScriptRoot
-$bePath    = Join-Path $root 'BE\VoicemeterAlt.Host'
+$bePath    = Join-Path $root 'BE\Mixion.Host'
 $beWwwroot = Join-Path $bePath 'wwwroot'
 $ngPath    = Join-Path $root 'FE\angular'
-$ngDist    = Join-Path $ngPath 'dist\voicemeter-alt\browser'
+$ngDist    = Join-Path $ngPath 'dist\mixion\browser'
 $outPath   = Join-Path $root 'output'
 $publishDir = Join-Path $outPath '.publish'
 
@@ -116,7 +116,7 @@ if (-not (Test-Path $ngDist)) {
 # -----------------------------------------------------------------------------
 # 4. Copy Angular bundle into the host's wwwroot/ (will be embedded by csproj)
 # -----------------------------------------------------------------------------
-Step "Staging Angular bundle into BE/VoicemeterAlt.Host/wwwroot/"
+Step "Staging Angular bundle into BE/Mixion.Host/wwwroot/"
 if (Test-Path $beWwwroot) { Remove-Item $beWwwroot -Recurse -Force }
 New-Item -ItemType Directory -Path $beWwwroot -Force | Out-Null
 Copy-Item -Path (Join-Path $ngDist '*') -Destination $beWwwroot -Recurse -Force
@@ -147,16 +147,16 @@ $selfContained = if ($Mode -eq 'portable') { 'true' } else { 'false' }
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 
-$producedExe = Join-Path $publishDir 'VoicemeterAlt.exe'
+$producedExe = Join-Path $publishDir 'Mixion.exe'
 if (-not (Test-Path $producedExe)) {
-    throw "Expected VoicemeterAlt.exe at $producedExe (check <AssemblyName> in csproj)."
+    throw "Expected Mixion.exe at $producedExe (check <AssemblyName> in csproj)."
 }
 
 # -----------------------------------------------------------------------------
 # 6. Move the exe to ./output and clean the publish staging
 # -----------------------------------------------------------------------------
 Step 'Collecting artifact into ./output'
-$finalExe = Join-Path $outPath 'VoicemeterAlt.exe'
+$finalExe = Join-Path $outPath 'Mixion.exe'
 Move-Item -Path $producedExe -Destination $finalExe -Force
 
 Remove-Item $publishDir -Recurse -Force -ErrorAction SilentlyContinue

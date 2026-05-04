@@ -117,6 +117,6 @@ export class ConnectionBannerComponent {
 
   readonly bannerText = computed(() =>
     this.status() === 'connecting'
-      ? 'Reconnecting to the VoicemeterAlt host…'
-      : 'VoicemeterAlt host stopped — attempting to reconnect.');
+      ? 'Reconnecting to the Mixion host…'
+      : 'Mixion host stopped — attempting to reconnect.');
 }

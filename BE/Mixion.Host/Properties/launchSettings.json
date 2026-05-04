@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "Mixion.Host": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "Mixion.Host (no-driver-check, fixed port)": {
+      "commandName": "Project",
+      "commandLineArgs": "--no-driver-check --port 54812 --no-browser",
+      "dotnetRunMessages": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
