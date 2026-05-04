@@ -118,7 +118,7 @@ BE/
 
 ```powershell
 cd BE/Mixion.Host
-dotnet run --port 54812
+dotnet run --launch-profile "Mixion.Host (no-driver-check, fixed port)"
 # 1. Probes WASAPI for VB-CABLE; if missing, shows MessageBox and exits.
 # 2. Binds Kestrel to 127.0.0.1:<random free port>.
 # 3. Starts audio engine.
