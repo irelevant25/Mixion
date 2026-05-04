@@ -93,6 +93,7 @@ export class PresetActionsService {
       outputSlots,
     });
     this.current.set(trimmed);
+    this.current.markClean();
   }
 
   /**
@@ -118,6 +119,7 @@ export class PresetActionsService {
     const missing = res?.missingDevices ?? [];
     this.lastMissingDevices.set(missing);
     this.lastLoadedName.set(name);
+    this.current.markClean();
     return { name, missingDevices: missing };
   }
 
@@ -165,6 +167,7 @@ export class PresetActionsService {
     this.current.set(null);
     this.lastLoadedName.set(null);
     this.lastMissingDevices.set([]);
+    this.current.markClean();
   }
 
   /** Fetch the preset list with metadata (name, createdAt, editedAt). */

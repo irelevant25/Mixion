@@ -1,5 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
+import { CurrentPresetService } from './current-preset.service';
 import { ChannelBus, ChannelDto, MixerStateStore } from './mixer-state.store';
 
 /**
@@ -28,7 +29,8 @@ const DEFAULT_SLOT_COUNT = 3;
  */
 @Injectable({ providedIn: 'root' })
 export class SlotsStore {
-  private readonly mixer = inject(MixerStateStore);
+  private readonly mixer  = inject(MixerStateStore);
+  private readonly preset = inject(CurrentPresetService);
 
   private readonly _inputs  = signal<Slot[]>(this.makeDefaults('in'));
   private readonly _outputs = signal<Slot[]>(this.makeDefaults('out'));
@@ -53,6 +55,7 @@ export class SlotsStore {
       ...prev,
       { id: this.makeSlotId(bus === 'input' ? 'in' : 'out'), deviceId: null },
     ]);
+    this.preset.markDirty();
   }
 
   /**
@@ -89,12 +92,14 @@ export class SlotsStore {
         ? next
         : [{ id: this.makeSlotId(prefix), deviceId: null }];
     });
+    this.preset.markDirty();
   }
 
   assignDevice(bus: ChannelBus, slotId: string, deviceId: string | null): void {
     this.busSignal(bus).update((prev) =>
       prev.map((s) => (s.id === slotId ? { ...s, deviceId: deviceId || null } : s)),
     );
+    this.preset.markDirty();
   }
 
   private busSignal(bus: ChannelBus) {

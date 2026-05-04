@@ -15,7 +15,24 @@ import { Injectable, signal } from '@angular/core';
 export class CurrentPresetService {
   readonly name = signal<string | null>(null);
 
+  /**
+   * True when the live mixer/slot state has diverged from the last saved or
+   * loaded preset. Set by store mutations driven by the user (gain, mute,
+   * routing, slot assignments…); cleared by save / load / new flows in
+   * `PresetActionsService`. Read by the "New" button to decide whether to
+   * warn the user before discarding their changes.
+   */
+  readonly dirty = signal(false);
+
   set(name: string | null): void {
     this.name.set(name && name.length > 0 ? name : null);
+  }
+
+  markDirty(): void {
+    if (!this.dirty()) this.dirty.set(true);
+  }
+
+  markClean(): void {
+    if (this.dirty()) this.dirty.set(false);
   }
 }

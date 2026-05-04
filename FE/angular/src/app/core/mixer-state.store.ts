@@ -1,4 +1,6 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
+
+import { CurrentPresetService } from './current-preset.service';
 
 /**
  * EQ band shape on the wire. Mirrors `BE EqBandWireDto` — the BE assigns
@@ -89,6 +91,7 @@ export interface MixerStateDto {
  */
 @Injectable({ providedIn: 'root' })
 export class MixerStateStore {
+  private readonly preset = inject(CurrentPresetService);
   private readonly _state = signal<MixerStateDto | null>(null);
 
   readonly state = this._state.asReadonly();
@@ -121,6 +124,7 @@ export class MixerStateStore {
     const matrix = cur.matrix.map((r, i) => (i === input ? r.slice() : r));
     matrix[input][output] = enabled;
     this._state.set({ ...cur, matrix });
+    this.preset.markDirty();
   }
 
   isRouted(input: number, output: number): boolean {
@@ -141,6 +145,7 @@ export class MixerStateStore {
     this._state.set(
       bus === 'input' ? { ...cur, inputs: next } : { ...cur, outputs: next },
     );
+    this.preset.markDirty();
   }
 
   getChannel(bus: ChannelBus, index: number): ChannelDto | null {

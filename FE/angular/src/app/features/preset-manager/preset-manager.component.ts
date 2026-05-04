@@ -294,6 +294,7 @@ export class PresetManagerComponent {
   protected readonly missingDevices = this.actions.lastMissingDevices;
   protected readonly lastLoadedName = this.actions.lastLoadedName;
   protected readonly currentName    = this.current.name;
+  protected readonly dirty          = this.current.dirty;
 
   /** Sorted by edited timestamp, newest first. */
   protected readonly sortedPresets = computed(() => {
@@ -316,20 +317,12 @@ export class PresetManagerComponent {
   }
 
   protected onNew(): void {
-    const currentName = this.currentName();
-    if (currentName) {
-      const proceed = window.confirm(
-        `Save changes to "${currentName}" before starting a new preset?`,
-      );
-      if (proceed) {
-        this.busy.set(true);
-        this.actions
-          .saveAs(currentName)
-          .then(() => this.detach())
-          .catch((err) => this.errorMessage.set(this.formatError('savePreset', err)))
-          .finally(() => this.busy.set(false));
-        return;
-      }
+    if (this.dirty()) {
+      const name = this.currentName();
+      const message = name
+        ? `You have unsaved changes to "${name}". Discard them and start a new preset?`
+        : 'You have unsaved changes. Discard them and start a new preset?';
+      if (!window.confirm(message)) return;
     }
     this.detach();
   }
