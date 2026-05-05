@@ -1,0 +1,42 @@
+
+    @if (open()) {
+      <div class="backdrop" (click)="onBackdropClick($event)" (keydown)="onKeyDown($event)" tabindex="-1">
+        <div class="drawer" role="dialog" [attr.aria-label]="title()" (click)="$event.stopPropagation()">
+          <header>
+            <h3>{{ title() }}</h3>
+            <button type="button" class="close" (click)="close()" aria-label="Close processing">×</button>
+          </header>
+
+          <div class="body">
+            @if (channel(); as ch) {
+              <app-pan-control
+                [bus]="bus()"
+                [channel]="index()"
+                [value]="ch.pan"
+                (panChange)="onPanChange($event)" />
+
+              <app-gate
+                [bus]="bus()"
+                [channel]="index()"
+                [value]="ch.gate"
+                (gateChange)="onGateChange($event)" />
+
+              <app-eq-curve
+                [bus]="bus()"
+                [channel]="index()"
+                [value]="ch.eq"
+                (eqChange)="onEqChange($event)" />
+
+              <app-compressor
+                [bus]="bus()"
+                [channel]="index()"
+                [value]="ch.compressor"
+                [gainReductionDb]="gainReductionDb()"
+                (compressorChange)="onCompressorChange($event)" />
+            } @else {
+              <p class="empty">No channel selected.</p>
+            }
+          </div>
+        </div>
+      </div>
+    }

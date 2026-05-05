@@ -16,11 +16,11 @@ import {
   EqStateDto,
   GateStateDto,
   MixerStateStore,
-} from '../../core/mixer-state.store';
-import { CompressorComponent } from './compressor.component';
-import { EqCurveComponent } from './eq-curve.component';
-import { GateComponent } from './gate.component';
-import { PanControlComponent } from './pan-control.component';
+} from '../../../core/mixer-state.store';
+import { CompressorComponent } from '../compressor/compressor.component';
+import { EqCurveComponent } from '../eq-curve/eq-curve.component';
+import { GateComponent } from '../gate/gate.component';
+import { PanControlComponent } from '../pan-control/pan-control.component';
 
 /**
  * Drawer/overlay that hosts the four DSP panels for one channel
@@ -43,111 +43,8 @@ import { PanControlComponent } from './pan-control.component';
     CompressorComponent,
     EqCurveComponent,
   ],
-  template: `
-    @if (open()) {
-      <div class="backdrop" (click)="onBackdropClick($event)" (keydown)="onKeyDown($event)" tabindex="-1">
-        <div class="drawer" role="dialog" [attr.aria-label]="title()" (click)="$event.stopPropagation()">
-          <header>
-            <h3>{{ title() }}</h3>
-            <button type="button" class="close" (click)="close()" aria-label="Close processing">×</button>
-          </header>
-
-          <div class="body">
-            @if (channel(); as ch) {
-              <app-pan-control
-                [bus]="bus()"
-                [channel]="index()"
-                [value]="ch.pan"
-                (panChange)="onPanChange($event)" />
-
-              <app-gate
-                [bus]="bus()"
-                [channel]="index()"
-                [value]="ch.gate"
-                (gateChange)="onGateChange($event)" />
-
-              <app-eq-curve
-                [bus]="bus()"
-                [channel]="index()"
-                [value]="ch.eq"
-                (eqChange)="onEqChange($event)" />
-
-              <app-compressor
-                [bus]="bus()"
-                [channel]="index()"
-                [value]="ch.compressor"
-                [gainReductionDb]="gainReductionDb()"
-                (compressorChange)="onCompressorChange($event)" />
-            } @else {
-              <p class="empty">No channel selected.</p>
-            }
-          </div>
-        </div>
-      </div>
-    }
-  `,
-  styles: [
-    `
-      :host { display: contents; }
-      .backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.5);
-        z-index: 100;
-        display: flex;
-        justify-content: flex-end;
-        outline: none;
-      }
-      .drawer {
-        background: #161616;
-        border-left: 1px solid #2a2a2a;
-        width: min(40rem, 100vw);
-        height: 100%;
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        color: #ddd;
-      }
-      header {
-        position: sticky;
-        top: 0;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
-        padding: 0.6rem 0.9rem;
-        background: #1d1d1d;
-        border-bottom: 1px solid #2a2a2a;
-        z-index: 1;
-      }
-      h3 {
-        margin: 0;
-        font-size: 13px;
-        font-weight: 600;
-      }
-      .close {
-        background: transparent;
-        border: 0;
-        color: #aaa;
-        font-size: 18px;
-        line-height: 1;
-        padding: 0 0.3rem;
-        cursor: pointer;
-      }
-      .close:hover { color: #ddd; }
-      .body {
-        display: flex;
-        flex-direction: column;
-        gap: 0.7rem;
-        padding: 0.7rem 0.9rem 1.2rem;
-      }
-      .empty {
-        margin: 0;
-        font-style: italic;
-        color: #888;
-      }
-    `,
-  ],
+  templateUrl: './processing-panel.component.html',
+  styleUrls: ['./processing-panel.component.css'],
 })
 export class ProcessingPanelComponent {
   readonly bus    = input.required<ChannelBus>();

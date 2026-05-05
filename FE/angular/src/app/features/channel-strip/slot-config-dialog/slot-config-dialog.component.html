@@ -1,0 +1,77 @@
+
+    <dialog #dlg (close)="onNativeClose()" class="slot-dlg">
+      <header>
+        <h2>{{ headingText() }}</h2>
+        <span class="header-actions">
+          <button
+            type="button"
+            class="refresh"
+            (click)="onRefresh()"
+            [disabled]="refreshing()"
+            [attr.aria-label]="'Refresh ' + bus() + ' device list'">
+            {{ refreshing() ? 'Refreshing…' : 'Refresh' }}
+          </button>
+          <button type="button" class="x" aria-label="Close" (click)="close()">×</button>
+        </span>
+      </header>
+
+      <p class="hint">Pick the device this slot should drive, or leave it unassigned.</p>
+
+      @if (refreshError()) {
+        <p class="err" role="alert">{{ refreshError() }}</p>
+      }
+
+      <ul class="devices" role="radiogroup" [attr.aria-label]="'Device for slot ' + letter()">
+        <li>
+          <label>
+            <input
+              type="radio"
+              [name]="'device-' + bus() + '-' + slotId()"
+              [checked]="!selectedDeviceId()"
+              (change)="onSelect(null)" />
+            <span class="name dim">— Not assigned —</span>
+          </label>
+        </li>
+        @for (d of visibleDevices(); track d.id) {
+          <li [class.missing]="!d.available">
+            <label>
+              <input
+                type="radio"
+                [name]="'device-' + bus() + '-' + slotId()"
+                [checked]="selectedDeviceId() === d.id"
+                [disabled]="isUsedElsewhere(d.id)"
+                (change)="onSelect(d.id)" />
+              <app-device-icon class="row-icon" [bus]="bus()" [channelId]="d.id" />
+              <span class="name" [title]="d.name">{{ d.name }}</span>
+              @if (!d.available) {
+                <span class="status missing-tag">(no longer available)</span>
+              } @else if (isUsedElsewhere(d.id)) {
+                <span class="status used">used in slot {{ usedInLetter(d.id) }}</span>
+              }
+              @if (isProcessChannel(d.id)) {
+                <button
+                  type="button"
+                  class="row-action"
+                  (click)="$event.preventDefault(); $event.stopPropagation(); onRemoveProcess(d.id)"
+                  [disabled]="removingId() === d.id"
+                  [attr.aria-label]="'Detach ' + d.name + ' from the mixer'"
+                  title="Detach this app — frees its loopback. The app keeps playing audio normally to its own output device.">
+                  {{ removingId() === d.id ? '…' : '×' }}
+                </button>
+              }
+            </label>
+          </li>
+        }
+        @if (visibleDevices().length === 0) {
+          <li class="empty">
+            No {{ bus() }} devices reported by the host.
+          </li>
+        }
+      </ul>
+
+      <footer>
+        <span class="actions">
+          <button type="button" class="danger" (click)="onRemove()">Remove slot</button>
+        </span>
+      </footer>
+    </dialog>

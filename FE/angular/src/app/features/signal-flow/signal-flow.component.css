@@ -1,0 +1,166 @@
+:host { display: block; color: #ddd; }
+.loading, .empty { color: #888; font-style: italic; }
+.flow { display: flex; flex-direction: column; gap: 1rem; }
+header { display: flex; align-items: center; gap: 1rem; }
+h2 { margin: 0; font-size: 1rem; font-weight: 600; flex: 1; }
+.caption { color: #aaa; font-size: 12px; line-height: 1.5; margin: 0;
+           max-width: 60rem; }
+.caption strong { color: #ddd; font-weight: 600; }
+.caption em { color: #ccc; font-style: normal; }
+.refresh {
+  background: transparent; border: 1px solid #333; color: #aaa;
+  padding: 0.25rem 0.7rem; border-radius: 3px; font-size: 12px;
+  cursor: pointer; margin-top: 0;
+}
+.refresh:hover:not(:disabled) { color: #ddd; border-color: #555; background: transparent; }
+.refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+.error {
+  background: #3a1f1f; color: #f7c8c8; border: 1px solid #6a3030;
+  border-radius: 3px; padding: 0.4rem 0.7rem; font-size: 12px;
+  display: flex; justify-content: space-between; gap: 0.4rem; align-items: center;
+  margin: 0;
+}
+.error .dismiss {
+  background: transparent; border: 0; color: #f7c8c8; font-size: 14px;
+  cursor: pointer; line-height: 1; margin-top: 0; padding: 0;
+}
+
+svg.diagram { width: 100%; height: 600px; background: #161616;
+              border: 1px solid #2a2a2a; border-radius: 6px;
+              display: block; }
+
+.node rect { fill: #1d1d1d; stroke: #3a3a3a; stroke-width: 1; }
+.node.output rect { fill: #1a2230; stroke: #2c4366; }
+.node.unavailable rect { fill: #2a1818; stroke: #6a3030; }
+.node-name { fill: #ddd; font: 600 12px system-ui, sans-serif; }
+.node-meta { fill: #aaa; font: 10.5px system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+.node-buffer { fill: #888; font: 10px system-ui, sans-serif; }
+.node.unavailable .node-name,
+.node.unavailable .node-meta,
+.node.unavailable .node-buffer { fill: #d99; }
+
+.edge path { fill: none; stroke: #3a8b5a; stroke-width: 1.5; opacity: 0.85; }
+.edge.high path { stroke: #c08040; }
+.edge.bridge path { stroke: #c08040; stroke-dasharray: 5 4; opacity: 0.85; }
+.edge .label-bg { fill: #161616; stroke: #2a2a2a; stroke-width: 1; }
+.edge .label-bg.bridge { stroke: #6a4a2a; }
+.edge .label { fill: #ddd; font: 600 10.5px system-ui, sans-serif; }
+.edge.high .label { fill: #f0b070; }
+.edge .label.bridge { fill: #f0b070; }
+
+.settings { display: flex; flex-direction: column; gap: 0.5rem;
+            background: #161616; border: 1px solid #2a2a2a; border-radius: 6px;
+            padding: 0.75rem 1rem; }
+.settings h3 { margin: 0; font-size: 12px; font-weight: 600;
+               text-transform: uppercase; letter-spacing: 0.06em; color: #aaa; }
+.settings-caption { color: #888; font-size: 11.5px; line-height: 1.5;
+                    margin: 0; max-width: 60rem; }
+.settings-caption em { color: #ccc; font-style: normal; font-weight: 600; }
+.settings-hint { color: #666; font-size: 11px; margin: 0; }
+.settings-controls { display: flex; gap: 0.75rem; flex-wrap: wrap;
+                     align-items: flex-end; }
+.settings-controls label { display: flex; flex-direction: column; gap: 0.2rem;
+                           font-size: 11px; color: #888;
+                           font-weight: 600; text-transform: uppercase;
+                           letter-spacing: 0.04em; }
+.settings-controls .ctl-row { display: inline-flex; align-items: center;
+                              gap: 0.4rem; }
+.settings-controls input[type="number"] {
+  background: #1d1d1d; color: #ddd; border: 1px solid #333;
+  border-radius: 3px; padding: 0.3rem 0.5rem; font-size: 12px;
+  width: 5rem; font-variant-numeric: tabular-nums;
+}
+.settings-controls input[type="number"]:focus { outline: 1px solid #2c4366; outline-offset: 0; }
+.settings-controls .unit { color: #888; font-size: 11px; }
+.settings-controls label.toggle { flex-direction: row; align-items: center;
+                                  gap: 0.4rem; font-size: 12px;
+                                  text-transform: none; letter-spacing: 0;
+                                  color: #ccc; font-weight: 400; }
+.settings-controls label.toggle input { width: auto; cursor: pointer; }
+.settings-actions { display: inline-flex; gap: 0.4rem; align-self: flex-end; }
+.apply-btn {
+  background: #2d6cdf; color: white; border: 0;
+  padding: 0.4rem 0.9rem; border-radius: 3px;
+  font-size: 12px; font-weight: 500; cursor: pointer; margin-top: 0;
+}
+.apply-btn:hover:not(:disabled) { background: #3b7be5; }
+.apply-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.reset-btn {
+  background: transparent; color: #aaa; border: 1px solid #333;
+  padding: 0.4rem 0.9rem; border-radius: 3px;
+  font-size: 12px; cursor: pointer; margin-top: 0;
+}
+.reset-btn:hover:not(:disabled) { color: #ddd; border-color: #555; }
+.reset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.measure { display: flex; flex-direction: column; gap: 0.5rem;
+           background: #161616; border: 1px solid #2a2a2a; border-radius: 6px;
+           padding: 0.75rem 1rem; }
+.measure h3 { margin: 0; font-size: 12px; font-weight: 600;
+              text-transform: uppercase; letter-spacing: 0.06em; color: #aaa; }
+.measure-caption { color: #888; font-size: 11.5px; line-height: 1.5;
+                   margin: 0; max-width: 60rem; }
+.measure-controls { display: flex; gap: 0.5rem; flex-wrap: wrap;
+                    align-items: flex-end; }
+.measure-controls label { display: flex; flex-direction: column; gap: 0.2rem;
+                          font-size: 11px; color: #888;
+                          font-weight: 600; text-transform: uppercase;
+                          letter-spacing: 0.04em; }
+.measure-controls select {
+  background: #1d1d1d; color: #ddd; border: 1px solid #333;
+  border-radius: 3px; padding: 0.3rem 0.5rem; font-size: 12px;
+  min-width: 14rem;
+}
+.measure-controls select:focus { outline: 1px solid #2c4366; outline-offset: 0; }
+.measure-btn {
+  background: #2d6cdf; color: white; border: 0;
+  padding: 0.4rem 0.9rem; border-radius: 3px;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  margin-top: 0; align-self: flex-end;
+}
+.measure-btn:hover:not(:disabled) { background: #3b7be5; }
+.measure-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.measure-btn.bridge {
+  background: transparent; color: #f0b070; border: 1px solid #6a4a2a;
+}
+.measure-btn.bridge:hover:not(:disabled) {
+  background: #2a1f10; border-color: #c08040;
+}
+.measure-result {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 0.5rem 1rem; padding: 0.5rem 0.75rem;
+  background: #102015; border: 1px solid #1f4030; border-radius: 4px;
+  font-size: 12px;
+}
+.measure-result.fail { background: #2a1818; border-color: #6a3030; }
+.result-pair { color: #ddd; display: inline-flex; gap: 0.3rem; align-items: baseline; }
+.result-pair .arr { color: #888; }
+.result-ms { color: #6fdc94; font-weight: 600;
+             font-variant-numeric: tabular-nums; font-size: 14px; }
+.result-ms.fail { color: #f7c8c8; }
+.result-meta { color: #888; font-size: 11px; flex-basis: 100%;
+               line-height: 1.5; }
+
+.paths { display: flex; flex-direction: column; gap: 0.5rem;
+         background: #161616; border: 1px solid #2a2a2a; border-radius: 6px;
+         padding: 0.75rem 1rem; }
+.paths h3 { margin: 0; font-size: 12px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.06em; color: #aaa; }
+.paths-caption { color: #888; font-size: 11.5px; line-height: 1.5; margin: 0; }
+.path-list { list-style: none; padding: 0; margin: 0;
+             display: flex; flex-direction: column; gap: 0.4rem; }
+.path-list li { display: flex; flex-direction: column; gap: 0.2rem;
+                padding: 0.4rem 0; border-bottom: 1px dotted #2a2a2a; }
+.path-list li:last-child { border-bottom: 0; }
+.path-chain { display: flex; align-items: center; gap: 0.35rem;
+              flex-wrap: wrap; font-size: 12px; }
+.path-step { color: #ddd; }
+.path-arrow { color: #666; }
+.path-meta { display: flex; align-items: center; gap: 0.5rem;
+             flex-wrap: wrap; font-size: 11px; color: #888; }
+.path-segments { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.seg { font-variant-numeric: tabular-nums; }
+.seg.bridge { color: #f0b070; }
+.path-total { color: #3a8b5a; font-weight: 600;
+              font-variant-numeric: tabular-nums; margin-left: auto; }
+.path-total.high { color: #c08040; }

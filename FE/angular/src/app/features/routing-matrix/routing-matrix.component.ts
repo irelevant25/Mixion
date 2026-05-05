@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 
 import { MixerStateStore } from '../../core/mixer-state.store';
-import { ChannelStripsComponent } from '../channel-strip/channel-strips.component';
+import { ChannelStripsComponent } from '../channel-strip/channel-strips/channel-strips.component';
 
 /**
  * Mixer page: hosts the input and output strip rows. Per-route toggling

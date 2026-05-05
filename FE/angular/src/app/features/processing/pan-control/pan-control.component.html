@@ -1,0 +1,20 @@
+
+    <div class="row">
+      <span class="label">Pan</span>
+      <div class="slider-row">
+        <span class="end">L</span>
+        <input
+          type="range"
+          min="-100"
+          max="100"
+          step="1"
+          [value]="sliderValue()"
+          [attr.aria-label]="'Pan for ' + bus() + ' channel ' + channel()"
+          [attr.aria-valuetext]="readout()"
+          (input)="onInput($event)"
+          (change)="onChange($event)"
+          (dblclick)="onRecentre()" />
+        <span class="end">R</span>
+      </div>
+      <span class="value" aria-hidden="true">{{ readout() }}</span>
+    </div>

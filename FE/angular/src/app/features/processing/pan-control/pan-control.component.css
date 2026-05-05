@@ -1,0 +1,40 @@
+
+      :host { display: block; }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        font: 12px/1.4 system-ui, sans-serif;
+        color: #ddd;
+      }
+      .label {
+        flex: 0 0 4rem;
+        font-weight: 600;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #aaa;
+      }
+      .slider-row {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .slider-row input[type='range'] {
+        flex: 1;
+        accent-color: #2d6cdf;
+        cursor: pointer;
+      }
+      .end {
+        font-size: 10px;
+        color: #777;
+        width: 0.8rem;
+        text-align: center;
+      }
+      .value {
+        flex: 0 0 3rem;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: #aaa;
+      }

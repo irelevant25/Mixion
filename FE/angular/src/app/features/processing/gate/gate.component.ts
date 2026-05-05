@@ -11,10 +11,10 @@ import {
   signal,
 } from '@angular/core';
 
-import { ChannelBus, GateStateDto, MixerStateStore } from '../../core/mixer-state.store';
-import { IpcService } from '../../core/ipc.service';
-import { DEFAULT_DSP_THROTTLE_MS, DspThrottle } from './dsp-throttle';
-import { DynamicsCurveComponent } from './dynamics-curve.component';
+import { ChannelBus, GateStateDto, MixerStateStore } from '../../../core/mixer-state.store';
+import { IpcService } from '../../../core/ipc.service';
+import { DEFAULT_DSP_THROTTLE_MS, DspThrottle } from '../dsp-throttle';
+import { DynamicsCurveComponent } from '../dynamics-curve/dynamics-curve.component';
 
 /**
  * Noise-gate control surface (FE-052). Five numeric controls plus a bypass
@@ -30,138 +30,8 @@ import { DynamicsCurveComponent } from './dynamics-curve.component';
   selector: 'app-gate',
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [DynamicsCurveComponent],
-  template: `
-    <fieldset class="stage" [class.bypassed]="!effective().enabled">
-      <legend>
-        <span>Gate</span>
-        <label class="bypass">
-          <input
-            type="checkbox"
-            [checked]="effective().enabled"
-            (change)="onToggleEnabled($event)" />
-          <span>Enable</span>
-        </label>
-      </legend>
-
-      <app-dynamics-curve
-        mode="gate"
-        [thresholdDb]="effective().thresholdDb"
-        [rangeDb]="effective().rangeDb"
-        [enabled]="effective().enabled"
-        [inputLevelDb]="inputLevelDb()"
-        (thresholdChange)="onCurveThreshold($event)"
-        (rangeChange)="onCurveRange($event)" />
-
-      <div class="grid">
-        <label>
-          <span>Threshold</span>
-          <input
-            type="range" min="-90" max="0" step="0.5"
-            [value]="effective().thresholdDb"
-            (input)="onSlider('thresholdDb', $event)"
-            (change)="onSliderEnd('thresholdDb', $event)" />
-          <span class="num">{{ effective().thresholdDb.toFixed(1) }} dB</span>
-        </label>
-
-        <label>
-          <span>Attack</span>
-          <input
-            type="range" min="0.1" max="200" step="0.1"
-            [value]="effective().attackMs"
-            (input)="onSlider('attackMs', $event)"
-            (change)="onSliderEnd('attackMs', $event)" />
-          <span class="num">{{ effective().attackMs.toFixed(1) }} ms</span>
-        </label>
-
-        <label>
-          <span>Hold</span>
-          <input
-            type="range" min="0" max="2000" step="1"
-            [value]="effective().holdMs"
-            (input)="onSlider('holdMs', $event)"
-            (change)="onSliderEnd('holdMs', $event)" />
-          <span class="num">{{ effective().holdMs.toFixed(0) }} ms</span>
-        </label>
-
-        <label>
-          <span>Release</span>
-          <input
-            type="range" min="1" max="2000" step="1"
-            [value]="effective().releaseMs"
-            (input)="onSlider('releaseMs', $event)"
-            (change)="onSliderEnd('releaseMs', $event)" />
-          <span class="num">{{ effective().releaseMs.toFixed(0) }} ms</span>
-        </label>
-
-        <label>
-          <span>Range</span>
-          <input
-            type="range" min="-90" max="0" step="1"
-            [value]="effective().rangeDb"
-            (input)="onSlider('rangeDb', $event)"
-            (change)="onSliderEnd('rangeDb', $event)" />
-          <span class="num">{{ effective().rangeDb.toFixed(0) }} dB</span>
-        </label>
-      </div>
-    </fieldset>
-  `,
-  styles: [
-    `
-      :host { display: block; }
-      .stage {
-        border: 1px solid #2a2a2a;
-        border-radius: 4px;
-        padding: 0.4rem 0.6rem 0.6rem;
-        margin: 0;
-        color: #ddd;
-        background: #161616;
-      }
-      .stage.bypassed { opacity: 0.5; }
-      legend {
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-        font: 600 11px/1.4 system-ui, sans-serif;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #ccc;
-        padding: 0 0.3rem;
-      }
-      .bypass {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        font-weight: 400;
-        text-transform: none;
-        letter-spacing: 0;
-        font-size: 11px;
-        color: #aaa;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: 5rem 1fr 5rem;
-        gap: 0.3rem 0.6rem;
-        align-items: center;
-      }
-      label {
-        display: contents;
-        font: 11px/1.4 system-ui, sans-serif;
-      }
-      label > span:first-child {
-        color: #aaa;
-      }
-      label input[type='range'] {
-        width: 100%;
-        accent-color: #2d6cdf;
-        cursor: pointer;
-      }
-      .num {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-        color: #aaa;
-      }
-    `,
-  ],
+  templateUrl: './gate.component.html',
+  styleUrls: ['./gate.component.css'],
 })
 export class GateComponent implements AfterViewInit, OnDestroy {
   readonly bus     = input.required<ChannelBus>();

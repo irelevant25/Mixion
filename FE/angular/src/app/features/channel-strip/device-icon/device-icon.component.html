@@ -1,0 +1,47 @@
+
+    @if (showAppPng()) {
+      <img
+        [src]="appIconUrl()"
+        (error)="onAppIconError()"
+        (load)="onAppIconLoad()"
+        alt=""
+        class="ic png" />
+    } @else {
+      @switch (kind()) {
+        @case ('app') {
+          <!-- Generic window icon: titlebar dot trio + body -->
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" class="ic">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <line x1="1.5" y1="5.5" x2="14.5" y2="5.5" stroke="currentColor" stroke-width="1.2"/>
+            <circle cx="3.4" cy="4" r="0.55" fill="currentColor"/>
+            <circle cx="5.1" cy="4" r="0.55" fill="currentColor"/>
+            <circle cx="6.8" cy="4" r="0.55" fill="currentColor"/>
+          </svg>
+        }
+        @case ('mic') {
+          <!-- Capsule mic + base/stand -->
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" class="ic">
+            <rect x="6" y="1.8" width="4" height="7.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M3.5 8 Q3.5 11.5 8 11.5 Q12.5 11.5 12.5 8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <line x1="8" y1="11.5" x2="8" y2="14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <line x1="5.5" y1="14" x2="10.5" y2="14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+        }
+        @case ('speaker') {
+          <!-- Speaker cone + sound waves -->
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" class="ic">
+            <path d="M2 6 H4.5 L8.5 3 V13 L4.5 10 H2 Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M10.6 5.4 Q12 8 10.6 10.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <path d="M12.5 3.8 Q14.6 8 12.5 12.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+        }
+        @default {
+          <!-- Plus-sign placeholder for an unassigned slot -->
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" class="ic dim">
+            <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-dasharray="2 2"/>
+            <line x1="8" y1="5" x2="8" y2="11" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+            <line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+          </svg>
+        }
+      }
+    }

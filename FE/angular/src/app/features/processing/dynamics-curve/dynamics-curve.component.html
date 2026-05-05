@@ -1,0 +1,17 @@
+
+    <div class="hdr">
+      <label class="smoothing" title="Level history smoothing — higher = slower decay">
+        <span>Smooth</span>
+        <input type="range" min="0" max="100" step="1"
+               [value]="smoothingPercent()" (input)="onSmoothing($event)" />
+        <span class="num">{{ smoothingPercent() }}%</span>
+      </label>
+    </div>
+    <div class="wrap" #wrap
+         (pointerdown)="onPointerDown($event)"
+         (pointermove)="onPointerMove($event)"
+         (pointerup)="onPointerUp($event)"
+         (pointercancel)="onPointerUp($event)"
+         (pointerleave)="onPointerLeaveCanvas($event)">
+      <canvas #cvs></canvas>
+    </div>

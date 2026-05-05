@@ -1,0 +1,12 @@
+<section class="wrap">
+  <h1>Host not reachable</h1>
+  <p>
+    The Mixion host is not responding on this origin. Make sure
+    <code>Mixion.exe</code> (or <code>dotnet run</code>) is running
+    and that this page is opened on the URL it printed.
+  </p>
+  @if (detail()) {
+    <pre class="detail">{{ detail() }}</pre>
+  }
+  <button type="button" (click)="retry.emit()">Retry</button>
+</section>

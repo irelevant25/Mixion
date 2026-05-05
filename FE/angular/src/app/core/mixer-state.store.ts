@@ -1,6 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { CurrentPresetService } from './current-preset.service';
+import { DriverBridge, detectDriverBridges } from './driver-bridge';
 
 /**
  * EQ band shape on the wire. Mirrors `BE EqBandWireDto` — the BE assigns
@@ -99,6 +100,17 @@ export class MixerStateStore {
   readonly inputs   = computed<ChannelDto[]>(() => this._state()?.inputs  ?? []);
   readonly outputs  = computed<ChannelDto[]>(() => this._state()?.outputs ?? []);
   readonly matrix   = computed<boolean[][]>(() => this._state()?.matrix  ?? []);
+
+  /**
+   * Output→input pairs that a virtual driver (VB-CABLE) wires together
+   * outside the matrix. Surfaced for UI overlays (e.g. an arrow on the
+   * Mixer / Signal-flow tabs) and to disable the matching matrix toggle:
+   * routing the captured side back to the rendered side would close a
+   * feedback loop the driver already provides.
+   */
+  readonly driverBridges = computed<DriverBridge[]>(() =>
+    detectDriverBridges(this.inputs(), this.outputs()),
+  );
 
   hydrate(init: MixerStateDto): void {
     this._state.set(this.normalise(init));

@@ -1,0 +1,78 @@
+<div class="strips-host" #host>
+  <section class="bus" aria-label="Inputs">
+    <header>
+      <h2>Inputs</h2>
+      <button type="button" class="add" (click)="addInput()">+ Add slot</button>
+    </header>
+    @if (inputSlots().length === 0) {
+      <p class="empty">No input slots. Add one to get started.</p>
+    } @else {
+      <div class="row" #inputRow>
+        @for (s of inputSlots(); track s.id; let i = $index) {
+          <app-channel-strip
+            [bus]="'input'"
+            [slotId]="s.id"
+            [letter]="letterIn(i)"
+            [dimmed]="anyInputSoloed() && !isSoloed('input', s.id)" />
+        }
+      </div>
+    }
+  </section>
+
+  <section class="bus" aria-label="Outputs">
+    <header>
+      <h2>Outputs</h2>
+      <button type="button" class="add" (click)="addOutput()">+ Add slot</button>
+    </header>
+    @if (outputSlots().length === 0) {
+      <p class="empty">No output slots. Add one to get started.</p>
+    } @else {
+      <div class="row" #outputRow>
+        @for (s of outputSlots(); track s.id; let i = $index) {
+          <app-channel-strip
+            [bus]="'output'"
+            [slotId]="s.id"
+            [letter]="letterOut(i)"
+            [dimmed]="anyOutputSoloed() && !isSoloed('output', s.id)" />
+        }
+      </div>
+    }
+  </section>
+
+  @if (bridgeLines().length > 0) {
+    <svg
+      class="bridges"
+      [attr.viewBox]="'0 0 ' + svgSize().w + ' ' + svgSize().h"
+      [attr.width]="svgSize().w"
+      [attr.height]="svgSize().h"
+      preserveAspectRatio="xMinYMin meet"
+      aria-hidden="true"
+      focusable="false">
+      <defs>
+        <marker
+          id="cableBridgeArrow"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="8"
+          markerHeight="8"
+          orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="#c08040" />
+        </marker>
+      </defs>
+      @for (l of bridgeLines(); track l.key) {
+        <g class="bridge-edge">
+          <title>{{ l.label }}</title>
+          <line
+            [attr.x1]="l.x1"
+            [attr.y1]="l.y1"
+            [attr.x2]="l.x2"
+            [attr.y2]="l.y2"
+            stroke="#c08040"
+            stroke-width="2"
+            marker-end="url(#cableBridgeArrow)" />
+        </g>
+      }
+    </svg>
+  }
+</div>

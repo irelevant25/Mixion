@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   computed,
   inject,
   input,
@@ -8,15 +9,15 @@ import {
   viewChild,
 } from '@angular/core';
 
-import { ChannelBus, ChannelDto, MixerStateStore } from '../../core/mixer-state.store';
-import { IpcError, IpcService } from '../../core/ipc.service';
-import { dbToSlider, formatDb, sliderToDb } from './db-fader';
-import { DeviceIconComponent } from './device-icon.component';
-import { RouteButtonsComponent } from './route-buttons.component';
-import { SlotConfigDialogComponent } from './slot-config-dialog.component';
-import { SlotsStore } from '../../core/slots.store';
-import { VuMeterComponent } from '../vu-meter/vu-meter.component';
-import { ProcessingPanelComponent } from '../processing/processing-panel.component';
+import { ChannelBus, ChannelDto, MixerStateStore } from '../../../core/mixer-state.store';
+import { IpcError, IpcService } from '../../../core/ipc.service';
+import { dbToSlider, formatDb, sliderToDb } from '../db-fader';
+import { DeviceIconComponent } from '../device-icon/device-icon.component';
+import { RouteButtonsComponent } from '../route-buttons/route-buttons.component';
+import { SlotConfigDialogComponent } from '../slot-config-dialog/slot-config-dialog.component';
+import { SlotsStore } from '../../../core/slots.store';
+import { VuMeterComponent } from '../../vu-meter/vu-meter.component';
+import { ProcessingPanelComponent } from '../../processing/processing-panel/processing-panel.component';
 
 /**
  * One channel strip = one slot. The slot's letter (A, B, C, …) labels the
@@ -50,6 +51,10 @@ export class ChannelStripComponent {
   private readonly mixer = inject(MixerStateStore);
   private readonly slots = inject(SlotsStore);
   private readonly ipc   = inject(IpcService);
+
+  /** Host element — exposed so the parent can position overlays (e.g. the
+   *  driver-bridge arrow on the Mixer) relative to this strip's bounds. */
+  readonly elementRef = inject<ElementRef<HTMLElement>>(ElementRef);
 
   readonly bus     = input.required<ChannelBus>();
   readonly slotId  = input.required<string>();

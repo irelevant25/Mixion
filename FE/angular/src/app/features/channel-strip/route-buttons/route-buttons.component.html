@@ -1,0 +1,21 @@
+
+    <div class="routes" [attr.aria-label]="'Routes for input slot ' + inputLetter()">
+      @for (slot of outputSlots(); track slot.id; let oIdx = $index) {
+        <button
+          type="button"
+          class="rt"
+          [class.on]="isOn(slot.id)"
+          [class.bridged]="isDriverBridged(slot.id)"
+          [disabled]="!canRoute(slot.id)"
+          [attr.aria-pressed]="isOn(slot.id)"
+          [attr.aria-label]="ariaFor(slot.id, oIdx)"
+          [title]="titleFor(slot.id, oIdx)"
+          (click)="toggle(slot.id)">
+          {{ label(oIdx) }}
+        </button>
+      }
+    </div>
+
+    @if (errorMessage(); as err) {
+      <p class="rt-error" role="alert">{{ err }}</p>
+    }

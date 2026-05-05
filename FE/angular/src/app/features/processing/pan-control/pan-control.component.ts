@@ -8,9 +8,9 @@ import {
   output,
 } from '@angular/core';
 
-import { ChannelBus } from '../../core/mixer-state.store';
-import { IpcService } from '../../core/ipc.service';
-import { DEFAULT_DSP_THROTTLE_MS, DspThrottle } from './dsp-throttle';
+import { ChannelBus } from '../../../core/mixer-state.store';
+import { IpcService } from '../../../core/ipc.service';
+import { DEFAULT_DSP_THROTTLE_MS, DspThrottle } from '../dsp-throttle';
 
 /**
  * Horizontal pan slider in <code>[-100, +100]</code> (BE position is
@@ -25,70 +25,8 @@ import { DEFAULT_DSP_THROTTLE_MS, DspThrottle } from './dsp-throttle';
 @Component({
   selector: 'app-pan-control',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="row">
-      <span class="label">Pan</span>
-      <div class="slider-row">
-        <span class="end">L</span>
-        <input
-          type="range"
-          min="-100"
-          max="100"
-          step="1"
-          [value]="sliderValue()"
-          [attr.aria-label]="'Pan for ' + bus() + ' channel ' + channel()"
-          [attr.aria-valuetext]="readout()"
-          (input)="onInput($event)"
-          (change)="onChange($event)"
-          (dblclick)="onRecentre()" />
-        <span class="end">R</span>
-      </div>
-      <span class="value" aria-hidden="true">{{ readout() }}</span>
-    </div>
-  `,
-  styles: [
-    `
-      :host { display: block; }
-      .row {
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-        font: 12px/1.4 system-ui, sans-serif;
-        color: #ddd;
-      }
-      .label {
-        flex: 0 0 4rem;
-        font-weight: 600;
-        font-size: 11px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: #aaa;
-      }
-      .slider-row {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-      }
-      .slider-row input[type='range'] {
-        flex: 1;
-        accent-color: #2d6cdf;
-        cursor: pointer;
-      }
-      .end {
-        font-size: 10px;
-        color: #777;
-        width: 0.8rem;
-        text-align: center;
-      }
-      .value {
-        flex: 0 0 3rem;
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-        color: #aaa;
-      }
-    `,
-  ],
+  templateUrl: './pan-control.component.html',
+  styleUrls: ['./pan-control.component.css'],
 })
 export class PanControlComponent {
   readonly bus     = input.required<ChannelBus>();

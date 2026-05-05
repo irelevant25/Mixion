@@ -1,0 +1,39 @@
+
+    :host { display: block; }
+    .hdr {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.6rem;
+      padding: 0 0.1rem 0.3rem;
+    }
+    .smoothing {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font: 11px/1.4 system-ui, sans-serif;
+      color: #aaa;
+    }
+    .smoothing input[type='range'] {
+      width: 6rem;
+      accent-color: #2d6cdf;
+      cursor: pointer;
+    }
+    .smoothing .num {
+      font-variant-numeric: tabular-nums;
+      color: #888;
+      min-width: 2.5rem;
+      text-align: right;
+    }
+    .wrap {
+      position: relative;
+      width: 100%;
+      height: 200px;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #0e0e0e;
+      border-radius: 3px;
+    }

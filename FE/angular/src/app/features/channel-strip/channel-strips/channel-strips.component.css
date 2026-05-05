@@ -1,0 +1,71 @@
+:host {
+  display: block;
+}
+
+.strips-host {
+  position: relative;
+}
+
+.bus {
+  margin-bottom: 1.25rem;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+}
+
+.add {
+  background: transparent;
+  border: 1px solid #333;
+  color: #aaa;
+  padding: 0.2rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font: 11px/1.4 system-ui, sans-serif;
+}
+
+.add:hover {
+  color: #ddd;
+  border-color: #555;
+}
+
+.row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0.6rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.4rem;
+}
+
+.empty {
+  margin: 0;
+  font-style: italic;
+  color: #777;
+  font-size: 12px;
+}
+
+/* Driver-bridge overlay: a straight amber arrow from the bottom-row strip
+   bound to a CABLE Input device up to the top-row strip bound to its
+   matching CABLE Output device. The SVG is pointer-transparent so it
+   never steals clicks from the strips underneath. Positions are
+   recomputed on resize/scroll in the component. */
+.bridges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}

@@ -43,22 +43,8 @@ const RED_DB    = -3;
 @Component({
   selector: 'app-vu-meter',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `<canvas #cvs [attr.aria-label]="ariaLabel()"></canvas>`,
-  styles: [
-    `
-      :host {
-        display: block;
-        width: 6px;
-        height: 100%;
-        flex: 0 0 auto;
-        background: #0c0c0c;
-        border: 1px solid #222;
-        border-radius: 2px;
-        overflow: hidden;
-      }
-      canvas { display: block; width: 100%; height: 100%; }
-    `,
-  ],
+  templateUrl: './vu-meter.component.html',
+  styleUrls: ['./vu-meter.component.css'],
 })
 export class VuMeterComponent implements AfterViewInit, OnDestroy {
   private readonly ipc = inject(IpcService);

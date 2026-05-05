@@ -1,0 +1,96 @@
+<section class="presets">
+  <header>
+    <h2>Presets</h2>
+    <span class="actions-head">
+      <button type="button" class="new" (click)="onNew()" [disabled]="loading() || busy()">
+        New
+      </button>
+      <button type="button" class="refresh" (click)="refresh()" [disabled]="loading()">
+        @if (loading()) { Loading… } @else { Refresh }
+      </button>
+    </span>
+  </header>
+
+  @if (errorMessage(); as msg) {
+    <p class="error" role="alert">
+      {{ msg }}
+      <button type="button" class="dismiss" (click)="dismissError()">×</button>
+    </p>
+  }
+
+  @if (missingDevices().length > 0) {
+    <div class="warn" role="alert">
+      <p class="warn-head">
+        <strong>Some devices were not found</strong> when loading
+        <code>{{ lastLoadedName() }}</code>:
+      </p>
+      <ul>
+        @for (d of missingDevices(); track d.friendlyName + d.interfaceName) {
+          <li>
+            <span class="dir">{{ d.direction }}</span>
+            <span class="friendly">{{ d.friendlyName }}</span>
+            @if (d.interfaceName) {
+              <span class="iface">— {{ d.interfaceName }}</span>
+            }
+          </li>
+        }
+      </ul>
+      <button type="button" class="dismiss-warn" (click)="dismissMissing()">Dismiss</button>
+    </div>
+  }
+
+  @if (sortedPresets().length === 0 && !loading()) {
+    <p class="empty">
+      No presets saved yet. Use Save or Save As at the top of the page to
+      create your first one.
+    </p>
+  } @else {
+    <table class="preset-table">
+      <colgroup>
+        <col class="col-name" />
+        <col class="col-ts" />
+        <col class="col-ts" />
+        <col class="col-actions" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Created</th>
+          <th scope="col">Edited</th>
+          <th scope="col" class="col-actions"><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (p of sortedPresets(); track p.name) {
+          <tr [class.active]="currentName() === p.name">
+            <td class="cell-name">
+              <span class="name-text">{{ p.name }}</span>
+              @if (currentName() === p.name) { <em class="badge">current</em> }
+            </td>
+            <td class="cell-ts" [title]="p.createdAt">{{ formatDate(p.createdAt) }}</td>
+            <td class="cell-ts" [title]="p.editedAt" >{{ formatDate(p.editedAt) }}</td>
+            <td class="cell-actions">
+              <span class="actions">
+                <button
+                  type="button"
+                  (click)="onLoad(p.name)"
+                  [disabled]="busyName() === p.name">
+                  @if (busyName() === p.name) { … } @else { Load }
+                </button>
+                <button
+                  type="button"
+                  (click)="onRename(p.name)"
+                  [disabled]="busyName() === p.name">Rename</button>
+                <button
+                  type="button"
+                  class="danger"
+                  (click)="onDelete(p.name)"
+                  [disabled]="busyName() === p.name">Delete</button>
+              </span>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+</section>

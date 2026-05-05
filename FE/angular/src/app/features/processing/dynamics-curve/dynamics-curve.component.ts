@@ -41,64 +41,8 @@ import {
 @Component({
   selector: 'app-dynamics-curve',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="hdr">
-      <label class="smoothing" title="Level history smoothing — higher = slower decay">
-        <span>Smooth</span>
-        <input type="range" min="0" max="100" step="1"
-               [value]="smoothingPercent()" (input)="onSmoothing($event)" />
-        <span class="num">{{ smoothingPercent() }}%</span>
-      </label>
-    </div>
-    <div class="wrap" #wrap
-         (pointerdown)="onPointerDown($event)"
-         (pointermove)="onPointerMove($event)"
-         (pointerup)="onPointerUp($event)"
-         (pointercancel)="onPointerUp($event)"
-         (pointerleave)="onPointerLeaveCanvas($event)">
-      <canvas #cvs></canvas>
-    </div>
-  `,
-  styles: [`
-    :host { display: block; }
-    .hdr {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 0.6rem;
-      padding: 0 0.1rem 0.3rem;
-    }
-    .smoothing {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.3rem;
-      font: 11px/1.4 system-ui, sans-serif;
-      color: #aaa;
-    }
-    .smoothing input[type='range'] {
-      width: 6rem;
-      accent-color: #2d6cdf;
-      cursor: pointer;
-    }
-    .smoothing .num {
-      font-variant-numeric: tabular-nums;
-      color: #888;
-      min-width: 2.5rem;
-      text-align: right;
-    }
-    .wrap {
-      position: relative;
-      width: 100%;
-      height: 200px;
-    }
-    canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-      background: #0e0e0e;
-      border-radius: 3px;
-    }
-  `],
+  templateUrl: './dynamics-curve.component.html',
+  styleUrls: ['./dynamics-curve.component.css'],
 })
 export class DynamicsCurveComponent implements AfterViewInit, OnDestroy {
   /** Which curve shape to render. */

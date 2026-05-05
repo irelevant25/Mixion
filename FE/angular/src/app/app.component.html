@@ -1,0 +1,77 @@
+@if (session.error()) {
+  <app-error-page
+    [detail]="errorDetail()"
+    (retry)="retry()" />
+} @else {
+  <header>
+    <h1>
+      <img src="logo.png" alt="" width="28" height="28" class="logo" aria-hidden="true" />
+      <span>Mixion</span>
+    </h1>
+    <nav>
+      <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Mixer</a>
+      <a routerLink="/presets" routerLinkActive="active">Presets</a>
+      <a routerLink="/signal-flow" routerLinkActive="active">Signal flow</a>
+    </nav>
+    <app-connection-banner />
+  </header>
+  <main>
+    <div class="top-row">
+      <dl class="meta">
+        <dt>Origin</dt><dd><code>{{ origin }}</code></dd>
+        <dt>Token</dt><dd><code>{{ tokenPreview() }}</code></dd>
+        <dt>Host version</dt><dd><code>{{ health()?.version ?? '—' }}</code></dd>
+        <dt>Host uptime</dt><dd>{{ health()?.uptimeSeconds ?? '—' }}s</dd>
+        <dt>Current preset</dt>
+        <dd class="preset-row">
+          <span class="preset-name">
+            @if (currentPreset(); as p) {
+              <code>{{ p }}</code>
+            } @else {
+              <span class="dim">— none —</span>
+            }
+          </span>
+          <span class="preset-actions">
+            <button
+              type="button"
+              class="ghost"
+              (click)="onSave()"
+              [disabled]="saving()">
+              @if (saving() === 'save') { Saving… } @else { Save }
+            </button>
+            <button
+              type="button"
+              class="ghost"
+              (click)="onSaveAs()"
+              [disabled]="saving()">
+              @if (saving() === 'saveAs') { Saving… } @else { Save As }
+            </button>
+          </span>
+          @if (saveError(); as msg) {
+            <span class="preset-error" role="alert">
+              {{ msg }}
+              <button type="button" class="dismiss" (click)="dismissSaveError()">×</button>
+            </span>
+          }
+        </dd>
+      </dl>
+      <aside class="legend" aria-label="Notes">
+        <h2>Notes</h2>
+        <ul>
+          <li>
+            <strong>M / S / EQ / COMP / GATE</strong> apply to the mixer's signal
+            path only. Process inputs (Chrome, VLC, …) keep playing through their
+            own Windows output device — to silence them globally, route the app
+            through a virtual cable instead.
+          </li>
+          <li>
+            <strong>CABLE Input ↔ CABLE Output</strong> are wired together by the
+            VB-CABLE driver itself. Anything Windows plays into <em>CABLE Input</em>
+            appears at <em>CABLE Output</em> regardless of this mixer's routing.
+          </li>
+        </ul>
+      </aside>
+    </div>
+    <router-outlet />
+  </main>
+}

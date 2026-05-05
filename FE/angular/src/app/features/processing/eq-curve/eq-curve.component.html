@@ -1,0 +1,77 @@
+
+    <fieldset class="stage" [class.bypassed]="!isEnabled()">
+      <legend>
+        <span>EQ</span>
+        <label class="bypass">
+          <input
+            type="checkbox"
+            [checked]="isEnabled()"
+            (change)="onToggleEnabled($event)" />
+          <span>Enable</span>
+        </label>
+        <label class="smoothing" title="Spectrum overlay smoothing — higher = slower decay">
+          <span>Smooth</span>
+          <input
+            type="range" min="0" max="100" step="1"
+            [value]="smoothingPercent()"
+            (input)="onSmoothingChange($event)" />
+          <span class="num">{{ smoothingPercent() }}%</span>
+        </label>
+        <span class="hint">
+          <em>double-click</em> empty: add band ·
+          <em>double-click</em> point: remove ·
+          <em>scroll</em>: Q ·
+          <em>right-click</em>: type
+        </span>
+      </legend>
+
+      <div class="canvas-wrap" #wrap
+           (dblclick)="onDoubleClick($event)"
+           (contextmenu)="onContextMenu($event)"
+           (wheel)="onWheel($event)"
+           (pointerdown)="onPointerDown($event)"
+           (pointermove)="onPointerMove($event)"
+           (pointerup)="onPointerUp($event)"
+           (pointercancel)="onPointerUp($event)"
+           (pointerleave)="onPointerLeave($event)"
+           (keydown)="onKeyDown($event)"
+           tabindex="0"
+           [attr.aria-label]="'EQ curve for ' + bus() + ' channel ' + channel()">
+        <canvas #cvs width="600" height="240"></canvas>
+
+        @if (hovered() !== null && hoveredBand(); as hb) {
+          <div class="hover-card"
+               [style.left.px]="hoverX()"
+               [style.top.px]="hoverY()">
+            <div><strong>{{ hb.type }}</strong></div>
+            <div>{{ formatFreq(hb.frequency) }}</div>
+            <div>{{ hb.gainDb.toFixed(1) }} dB</div>
+            <div>Q {{ hb.q.toFixed(2) }}</div>
+          </div>
+        }
+
+        @if (typeMenu() !== null && typeMenuBand(); as mb) {
+          <div class="type-menu"
+               [style.left.px]="typeMenu()!.x"
+               [style.top.px]="typeMenu()!.y"
+               (pointerdown)="$event.stopPropagation()"
+               (contextmenu)="$event.preventDefault()">
+            @for (t of FILTER_TYPES; track t) {
+              <button
+                type="button"
+                [class.current]="t === mb.type"
+                (click)="onPickType(mb.id, t)">
+                {{ t }}
+              </button>
+            }
+          </div>
+        }
+      </div>
+
+      @if (errorMessage(); as err) {
+        <div class="error" role="alert">
+          <span>{{ err }}</span>
+          <button type="button" (click)="dismissError()">×</button>
+        </div>
+      }
+    </fieldset>

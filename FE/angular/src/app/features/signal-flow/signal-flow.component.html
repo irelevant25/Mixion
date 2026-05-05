@@ -1,0 +1,347 @@
+@if (!hydrated()) {
+  <p class="loading">Loading mixer state…</p>
+} @else {
+  <section class="flow">
+    <header>
+      <h2>Signal flow</h2>
+      <button type="button" class="refresh" (click)="refresh()" [disabled]="busy()">
+        @if (busy()) { Refreshing… } @else { Refresh }
+      </button>
+    </header>
+
+    @if (errorMessage(); as msg) {
+      <p class="error" role="alert">
+        {{ msg }}
+        <button type="button" class="dismiss" (click)="dismissError()">×</button>
+      </p>
+    }
+
+    <p class="caption">
+      Static estimate. Per-route latency is the sum of
+      <strong>capture buffer</strong> +
+      <strong>engine block ({{ engineBlockMsLabel() }})</strong> +
+      <strong>render buffer</strong>.
+      @if (virtualBridges().length > 0) {
+        Dashed loops are <strong>virtual driver bridges</strong> the OS wires
+        internally (VB-CABLE bridges <em>CABLE Input</em> →
+        <em>CABLE Output</em> regardless of this matrix); their ms figure is
+        an estimate, not a measurement.
+      }
+    </p>
+
+    @if (routes().length === 0) {
+      <p class="empty">No active routes. Toggle some on the Mixer page first.</p>
+    } @else {
+      <svg
+        class="diagram"
+        [attr.viewBox]="viewBox()"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label="Signal flow diagram">
+        <defs>
+          <marker
+            id="arrowHead"
+            viewBox="0 0 10 10"
+            refX="10"
+            refY="5"
+            markerWidth="8"
+            markerHeight="8"
+            orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 Z" fill="#888" />
+          </marker>
+          <marker
+            id="arrowHeadBridge"
+            viewBox="0 0 10 10"
+            refX="10"
+            refY="5"
+            markerWidth="8"
+            markerHeight="8"
+            orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 Z" fill="#c08040" />
+          </marker>
+        </defs>
+
+        @for (n of inputNodes(); track n.id) {
+          <g class="node" [class.unavailable]="!n.available">
+            <rect
+              [attr.x]="n.x"
+              [attr.y]="n.y"
+              [attr.width]="nodeWidth"
+              [attr.height]="nodeHeight"
+              rx="4" />
+            <text
+              class="node-name"
+              [attr.x]="n.x + 10"
+              [attr.y]="n.y + 16">
+              {{ n.name }}
+            </text>
+            <text
+              class="node-meta"
+              [attr.x]="n.x + 10"
+              [attr.y]="n.y + 32">
+              {{ formatDeviceFormat(n) }}
+            </text>
+            <text
+              class="node-buffer"
+              [attr.x]="n.x + 10"
+              [attr.y]="n.y + 48">
+              {{ n.bufferMs }} ms capture
+            </text>
+          </g>
+        }
+
+        @for (n of outputNodes(); track n.id) {
+          <g class="node output" [class.unavailable]="!n.available">
+            <rect
+              [attr.x]="n.x"
+              [attr.y]="n.y"
+              [attr.width]="nodeWidth"
+              [attr.height]="nodeHeight"
+              rx="4" />
+            <text
+              class="node-name"
+              [attr.x]="n.x + 10"
+              [attr.y]="n.y + 16">
+              {{ n.name }}
+            </text>
+            <text
+              class="node-meta"
+              [attr.x]="n.x + 10"
+              [attr.y]="n.y + 32">
+              {{ formatDeviceFormat(n) }}
+            </text>
+            <text
+              class="node-buffer"
+              [attr.x]="n.x + 10"
+              [attr.y]="n.y + 48">
+              {{ n.bufferMs }} ms render
+            </text>
+          </g>
+        }
+
+        @for (e of edges(); track e.key) {
+          <g class="edge" [class.high]="e.totalMs >= 50">
+            <path [attr.d]="e.path" marker-end="url(#arrowHead)" />
+            <rect
+              class="label-bg"
+              [attr.x]="e.labelX - 28"
+              [attr.y]="e.labelY - 10"
+              width="56"
+              height="18"
+              rx="3" />
+            <text
+              class="label"
+              [attr.x]="e.labelX"
+              [attr.y]="e.labelY + 4"
+              text-anchor="middle">
+              {{ formatMs(e.totalMs) }}
+            </text>
+          </g>
+        }
+
+        @for (e of bridgeEdges(); track e.key) {
+          <g class="edge bridge">
+            <path [attr.d]="e.path" marker-end="url(#arrowHeadBridge)" />
+            <rect
+              class="label-bg bridge"
+              [attr.x]="e.labelX - 56"
+              [attr.y]="e.labelY - 10"
+              width="112"
+              height="18"
+              rx="3" />
+            <text
+              class="label bridge"
+              [attr.x]="e.labelX"
+              [attr.y]="e.labelY + 4"
+              text-anchor="middle">
+              {{ e.label }}
+            </text>
+          </g>
+        }
+      </svg>
+
+      <div class="settings">
+        <h3>Audio engine settings</h3>
+        <p class="settings-caption">
+          Buffer sizes for the regular shared-mode WASAPI path. Lower
+          values reduce latency but can cause crackling on slower
+          hardware. The IAudioClient3 low-latency path uses the OS-
+          reported minimum engine period regardless of these values
+          — uncheck <em>Prefer low-latency</em> to force the regular
+          path with the values below.
+        </p>
+        <div class="settings-controls">
+          <label>
+            <span class="ctl-name">Capture buffer</span>
+            <span class="ctl-row">
+              <input
+                type="number"
+                [value]="draftCaptureBufferMs()"
+                [min]="audioSettings()?.minBufferMs ?? 1"
+                [max]="audioSettings()?.maxBufferMs ?? 200"
+                step="1"
+                (input)="onCaptureBufferInput($any($event.target).value)" />
+              <span class="unit">ms</span>
+            </span>
+          </label>
+          <label>
+            <span class="ctl-name">Render latency</span>
+            <span class="ctl-row">
+              <input
+                type="number"
+                [value]="draftRenderLatencyMs()"
+                [min]="audioSettings()?.minBufferMs ?? 1"
+                [max]="audioSettings()?.maxBufferMs ?? 200"
+                step="1"
+                (input)="onRenderLatencyInput($any($event.target).value)" />
+              <span class="unit">ms</span>
+            </span>
+          </label>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              [checked]="draftPreferLowLatency()"
+              (change)="onPreferLowLatencyToggle($any($event.target).checked)" />
+            <span>Prefer low-latency (IAudioClient3)</span>
+          </label>
+          <span class="settings-actions">
+            <button
+              type="button"
+              class="apply-btn"
+              (click)="applySettings()"
+              [disabled]="!settingsDirty() || applyingSettings()">
+              @if (applyingSettings()) { Applying… } @else { Apply }
+            </button>
+            <button
+              type="button"
+              class="reset-btn"
+              (click)="resetSettingsDraft()"
+              [disabled]="!settingsDirty() || applyingSettings()">
+              Reset
+            </button>
+          </span>
+        </div>
+        <p class="settings-hint">
+          Applying rebuilds the audio engine; channels, gain, and routing
+          are preserved. Allowed range:
+          {{ audioSettings()?.minBufferMs ?? 1 }}–{{ audioSettings()?.maxBufferMs ?? 200 }} ms.
+        </p>
+      </div>
+
+      <div class="measure">
+        <h3>Measure round-trip</h3>
+        <p class="measure-caption">
+          Injects a 30 ms 1 kHz tone into the chosen output and watches
+          the chosen input for it to come back. Stay quiet while it runs
+          (≈ 0.5 s) so the burst isn't masked by voice. The chosen
+          output's audio is briefly silenced during the test.
+        </p>
+        <div class="measure-controls">
+          <label>
+            Output
+            <select [value]="selectedOutputIndex()" (change)="onSelectOutput($any($event.target).value)">
+              @for (o of outputs(); track o.id; let idx = $index) {
+                <option [value]="idx">{{ o.name }}</option>
+              }
+            </select>
+          </label>
+          <label>
+            Input
+            <select [value]="selectedInputIndex()" (change)="onSelectInput($any($event.target).value)">
+              @for (i of inputs(); track i.id; let idx = $index) {
+                <option [value]="idx">{{ i.name }}</option>
+              }
+            </select>
+          </label>
+          <button
+            type="button"
+            class="measure-btn"
+            (click)="measureSelected()"
+            [disabled]="!!measuring()">
+            @if (isMeasuring(selectedInputIndex(), selectedOutputIndex())) {
+              Measuring…
+            } @else {
+              Measure
+            }
+          </button>
+          @if (virtualBridges().length > 0) {
+            @for (b of virtualBridges(); track b.outputIndex + '-' + b.inputIndex) {
+              <button
+                type="button"
+                class="measure-btn bridge"
+                (click)="measure(b.inputIndex, b.outputIndex)"
+                [disabled]="!!measuring()"
+                title="Inject at CABLE Input, watch CABLE Output — measures the VB-CABLE driver round-trip.">
+                @if (isMeasuring(b.inputIndex, b.outputIndex)) {
+                  Measuring bridge…
+                } @else {
+                  Measure CABLE bridge
+                }
+              </button>
+            }
+          }
+        </div>
+        @if (latestMeasurement(); as m) {
+          <div class="measure-result" [class.fail]="!m.detected">
+            <span class="result-pair">
+              <strong>{{ m.outputName }}</strong>
+              <span class="arr">↬</span>
+              <strong>{{ m.inputName }}</strong>
+            </span>
+            @if (m.detected) {
+              <span class="result-ms">{{ formatMs(m.latencyMs) }}</span>
+              <span class="result-meta">
+                detected at sample {{ m.detectionSample }}
+                (amp {{ m.detectionAmplitude.toFixed(3) }},
+                threshold {{ m.threshold.toFixed(2) }})
+              </span>
+            } @else {
+              <span class="result-ms fail">not detected</span>
+              <span class="result-meta">
+                burst never reached the watch input within {{ watchWindowMs(m) }} ms.
+                Make sure something physically loops {{ m.outputName }} back to {{ m.inputName }}
+                (e.g. CABLE Input → CABLE Output, or a mic placed near the speaker).
+              </span>
+            }
+          </div>
+        }
+      </div>
+
+      @if (endToEndPaths().length > 0) {
+        <div class="paths">
+          <h3>End-to-end paths</h3>
+          <p class="paths-caption">
+            Sum of every hop including the driver bridge. This is the figure
+            you should compare against a stopwatch / recording measurement.
+          </p>
+          <ul class="path-list">
+            @for (p of endToEndPaths(); track p.key) {
+              <li>
+                <div class="path-chain">
+                  @for (s of p.steps; track $index; let last = $last) {
+                    <span class="path-step">{{ s }}</span>
+                    @if (!last) {
+                      <span class="path-arrow">→</span>
+                    }
+                  }
+                </div>
+                <div class="path-meta">
+                  <span class="path-segments">
+                    @for (seg of p.segments; track $index) {
+                      <span class="seg" [class.bridge]="seg.kind === 'bridge'">
+                        {{ seg.label }} {{ formatMs(seg.ms) }}
+                      </span>
+                    }
+                  </span>
+                  <span class="path-total" [class.high]="p.totalMs >= 50">
+                    = {{ formatMs(p.totalMs) }}
+                  </span>
+                </div>
+              </li>
+            }
+          </ul>
+        </div>
+      }
+    }
+  </section>
+}
