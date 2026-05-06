@@ -25,7 +25,10 @@ h2 { margin: 0; font-size: 1rem; font-weight: 600; flex: 1; }
   cursor: pointer; line-height: 1; margin-top: 0; padding: 0;
 }
 
-svg.diagram { width: 100%; height: 600px; background: #161616;
+/* Height comes from the [attr.height] binding so each device row keeps a
+   fixed pixel size as the channel count grows; min-height keeps the
+   diagram from collapsing when there are very few rows. */
+svg.diagram { width: 100%; min-height: 220px; background: #161616;
               border: 1px solid #2a2a2a; border-radius: 6px;
               display: block; }
 
@@ -47,51 +50,6 @@ svg.diagram { width: 100%; height: 600px; background: #161616;
 .edge .label { fill: #ddd; font: 600 10.5px system-ui, sans-serif; }
 .edge.high .label { fill: #f0b070; }
 .edge .label.bridge { fill: #f0b070; }
-
-.settings { display: flex; flex-direction: column; gap: 0.5rem;
-            background: #161616; border: 1px solid #2a2a2a; border-radius: 6px;
-            padding: 0.75rem 1rem; }
-.settings h3 { margin: 0; font-size: 12px; font-weight: 600;
-               text-transform: uppercase; letter-spacing: 0.06em; color: #aaa; }
-.settings-caption { color: #888; font-size: 11.5px; line-height: 1.5;
-                    margin: 0; max-width: 60rem; }
-.settings-caption em { color: #ccc; font-style: normal; font-weight: 600; }
-.settings-hint { color: #666; font-size: 11px; margin: 0; }
-.settings-controls { display: flex; gap: 0.75rem; flex-wrap: wrap;
-                     align-items: flex-end; }
-.settings-controls label { display: flex; flex-direction: column; gap: 0.2rem;
-                           font-size: 11px; color: #888;
-                           font-weight: 600; text-transform: uppercase;
-                           letter-spacing: 0.04em; }
-.settings-controls .ctl-row { display: inline-flex; align-items: center;
-                              gap: 0.4rem; }
-.settings-controls input[type="number"] {
-  background: #1d1d1d; color: #ddd; border: 1px solid #333;
-  border-radius: 3px; padding: 0.3rem 0.5rem; font-size: 12px;
-  width: 5rem; font-variant-numeric: tabular-nums;
-}
-.settings-controls input[type="number"]:focus { outline: 1px solid #2c4366; outline-offset: 0; }
-.settings-controls .unit { color: #888; font-size: 11px; }
-.settings-controls label.toggle { flex-direction: row; align-items: center;
-                                  gap: 0.4rem; font-size: 12px;
-                                  text-transform: none; letter-spacing: 0;
-                                  color: #ccc; font-weight: 400; }
-.settings-controls label.toggle input { width: auto; cursor: pointer; }
-.settings-actions { display: inline-flex; gap: 0.4rem; align-self: flex-end; }
-.apply-btn {
-  background: #2d6cdf; color: white; border: 0;
-  padding: 0.4rem 0.9rem; border-radius: 3px;
-  font-size: 12px; font-weight: 500; cursor: pointer; margin-top: 0;
-}
-.apply-btn:hover:not(:disabled) { background: #3b7be5; }
-.apply-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.reset-btn {
-  background: transparent; color: #aaa; border: 1px solid #333;
-  padding: 0.4rem 0.9rem; border-radius: 3px;
-  font-size: 12px; cursor: pointer; margin-top: 0;
-}
-.reset-btn:hover:not(:disabled) { color: #ddd; border-color: #555; }
-.reset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .measure { display: flex; flex-direction: column; gap: 0.5rem;
            background: #161616; border: 1px solid #2a2a2a; border-radius: 6px;

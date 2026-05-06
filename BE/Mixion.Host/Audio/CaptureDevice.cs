@@ -36,6 +36,10 @@ public sealed class CaptureDevice : IAudioCaptureSource
     public int    BitsPerSample  => _capture.WaveFormat.BitsPerSample;
     public RingBuffer Ring     => _ring;
     public int    BufferMilliseconds => _bufferMs;
+    // Legacy shared-mode WASAPI doesn't surface the granted period directly.
+    // Approximate from the configured ms; the OS may round up but this is the
+    // floor MixEngine should plan around.
+    public int    BufferFrames => Math.Max(1, _bufferMs * SampleRate / 1000);
     public event EventHandler? DataReady;
 
     public CaptureDevice(MMDevice device, int ringCapacitySamples, int bufferMs = DefaultCaptureBufferMs)

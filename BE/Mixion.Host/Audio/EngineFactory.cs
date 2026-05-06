@@ -82,12 +82,7 @@ public sealed class EngineFactory
 
         var (physicalRenders, physicalIdToRender) = OpenAllPhysical<IRenderDevice>(
             enumerator, DataFlow.Render, targetRate,
-            (mm, ring) => settings.PreferLowLatency
-                ? OpenLowLatencyOrFallback<IRenderDevice>(
-                    () => new LowLatencyRenderDevice(mm, ring),
-                    () => new RenderDevice(mm, ring, settings.RenderLatencyMs),
-                    $"render '{mm.FriendlyName}'")
-                : new RenderDevice(mm, ring, settings.RenderLatencyMs));
+            (mm, ring) => OpenRender(mm, ring, settings));
 
         var processCaptures = OpenProcessLoopbacks(targetRate);
         var processIdToCapture = processCaptures.ToDictionary(c => c.Id);
@@ -219,11 +214,103 @@ public sealed class EngineFactory
         var loopbacks = OpenLoopbacks(enumerator, renders);
 
         var engine = new MixEngine(inputs, renders, initial, _logger, loopbacks);
-        engine.Start();
+        try
+        {
+            engine.Start();
+        }
+        catch
+        {
+            // Belt-and-braces: MixEngine.Start now rolls back its own
+            // started devices, but Dispose also tears down the un-started
+            // ones (e.g. the COM RCWs allocated during construction) so
+            // nothing leaks regardless of where Start failed.
+            engine.Dispose();
+            throw;
+        }
         return new BuildResult(engine, initial);
     }
 
     public sealed record BuildResult(MixEngine Engine, MixerState InitialState);
+
+    /// <summary>
+    /// Pick the right <see cref="IRenderDevice"/> implementation for
+    /// <paramref name="device"/> based on the user's per-device
+    /// preferences. Order:
+    /// <list type="number">
+    ///   <item>If the user has opted this device into WASAPI exclusive
+    ///         mode, try <see cref="ExclusiveRenderDevice"/> first. On
+    ///         failure (virtual cables, picky drivers, format rejection)
+    ///         fall through to the shared-mode paths so the user still
+    ///         hears audio.</item>
+    ///   <item>Otherwise, if <see cref="AudioSettings.PreferLowLatency"/>
+    ///         is set, try <see cref="LowLatencyRenderDevice"/> via
+    ///         <c>IAudioClient3</c>; fall back to <see cref="RenderDevice"/>
+    ///         on any exception.</item>
+    ///   <item>Otherwise, use the regular <see cref="RenderDevice"/>.</item>
+    /// </list>
+    /// </summary>
+    private IRenderDevice OpenRender(MMDevice device, int ringCapacityFrames, AudioSettings settings)
+    {
+        string? exclusiveFallbackReason = null;
+
+        if (settings.IsExclusiveRender(device.ID))
+        {
+            var latencyMs = settings.GetExclusiveRenderLatencyMs(device.ID);
+            try
+            {
+                var d = new ExclusiveRenderDevice(device, ringCapacityFrames, latencyMs);
+                _logger.LogInformation(
+                    "Opened render '{Name}' in WASAPI exclusive mode at {Ms} ms.",
+                    device.FriendlyName, latencyMs);
+                return d;
+            }
+            catch (Exception ex)
+            {
+                // Capture the underlying message so the FE can show *why*
+                // exclusive failed (format mismatch, device busy, alignment,
+                // etc.) instead of a generic "fell back" warning. The
+                // fallback shared-mode device gets the reason stamped on
+                // it below before we return.
+                exclusiveFallbackReason = SummariseExclusiveError(ex);
+                _logger.LogWarning(
+                    "Exclusive mode unavailable for render '{Name}' ({Reason}); falling back to shared mode.",
+                    device.FriendlyName, ex.Message);
+            }
+        }
+
+        var fallback = settings.PreferLowLatency
+            ? OpenLowLatencyOrFallback<IRenderDevice>(
+                () => new LowLatencyRenderDevice(device, ringCapacityFrames),
+                () => new RenderDevice(device, ringCapacityFrames, settings.RenderLatencyMs),
+                $"render '{device.FriendlyName}'")
+            : new RenderDevice(device, ringCapacityFrames, settings.RenderLatencyMs);
+
+        if (exclusiveFallbackReason is not null)
+            fallback.ExclusiveFallbackReason = exclusiveFallbackReason;
+
+        return fallback;
+    }
+
+    /// <summary>
+    /// Trim the noisy WASAPI exception text to something meaningful for
+    /// the FE. NAudio wraps HRESULTs in <see cref="COMException"/>; the
+    /// raw message is usually a hex code that nobody reads. This helper
+    /// keeps known-meaningful prefixes verbatim and falls back to the
+    /// outer message otherwise.
+    /// </summary>
+    private static string SummariseExclusiveError(Exception ex)
+    {
+        // Walk the inner-exception chain — the most useful message is
+        // typically on the deepest wrapped exception, where NAudio left
+        // the COM HRESULT detail.
+        var cur = ex;
+        while (cur is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(cur.Message)) return cur.Message;
+            cur = cur.InnerException;
+        }
+        return "exclusive-mode open failed";
+    }
 
     /// <summary>
     /// Open a device through <paramref name="lowLatency"/> first; on any
@@ -350,6 +437,23 @@ public sealed class EngineFactory
         foreach (var r in renders)
         {
             if (r is null) { result.Add(null); continue; }
+
+            // WASAPI loopback capture relies on the device's shared-mode
+            // mixer to tap. A device opened in exclusive mode bypasses
+            // that mixer entirely, so trying to attach a loopback returns
+            // AUDCLNT_E_DEVICE_IN_USE — and that exception bubbled up out
+            // of MixEngine.Start, killing the entire engine. Skip cleanly:
+            // the user just doesn't get a peak meter on this output, which
+            // is the documented trade-off for exclusive mode.
+            if (r.Mode == RenderMode.Exclusive)
+            {
+                _logger.LogInformation(
+                    "Skipping loopback meter on '{Name}' — device is opened in exclusive mode.",
+                    r.FriendlyName);
+                result.Add(null);
+                continue;
+            }
+
             try
             {
                 var mm = enumerator.GetDevice(r.Id);

@@ -22,4 +22,11 @@ export const routes: Routes = [
         (m) => m.SignalFlowComponent,
       ),
   },
+  {
+    path: 'audio-settings',
+    loadComponent: () =>
+      import('./features/audio-settings/audio-settings.component').then(
+        (m) => m.AudioSettingsComponent,
+      ),
+  },
 ];

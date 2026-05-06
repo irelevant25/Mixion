@@ -48,6 +48,15 @@ public interface IAudioCaptureSource : IDisposable
     int BufferMilliseconds { get; }
 
     /// <summary>
+    /// Granted (or configured) period in mono frames at <see cref="SampleRate"/>.
+    /// Low-latency devices report what the OS actually granted via
+    /// <c>GetSharedModeEnginePeriod</c>; legacy devices approximate from
+    /// <see cref="BufferMilliseconds"/>. Used by <see cref="MixEngine"/> to
+    /// align its mix block size with the slowest device on the bus.
+    /// </summary>
+    int BufferFrames { get; }
+
+    /// <summary>
     /// Fired immediately after a fresh block is appended to <see cref="Ring"/>.
     /// Lets the mix loop replace its 1 ms polling sleep with a cooperative
     /// wait — capture handlers signal, mix loop wakes, no scheduler tax.

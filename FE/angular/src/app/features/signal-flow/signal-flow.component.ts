@@ -22,14 +22,6 @@ interface LatencyChannel {
   available: boolean;
 }
 
-interface AudioSettings {
-  captureBufferMs: number;
-  renderLatencyMs: number;
-  preferLowLatency: boolean;
-  minBufferMs: number;
-  maxBufferMs: number;
-}
-
 interface LatencyEstimate {
   sampleRate: number;
   blockFrames: number;
@@ -147,30 +139,6 @@ export class SignalFlowComponent implements OnInit {
   protected readonly selectedInputIndex  = signal<number>(0);
   protected readonly selectedOutputIndex = signal<number>(0);
 
-  /**
-   * Live audio settings — the BE values, mirrored locally. Populated by
-   * <c>refresh()</c>; user edits the local `draft*` signals and clicks
-   * Apply, which sends `setAudioSettings` and re-fetches.
-   */
-  protected readonly audioSettings = signal<AudioSettings | null>(null);
-  // Initial values mirror AudioSettings.Default on the BE so the form
-  // doesn't render blank during first paint, before getAudioSettings replies.
-  protected readonly draftCaptureBufferMs  = signal<number>(10);
-  protected readonly draftRenderLatencyMs  = signal<number>(10);
-  protected readonly draftPreferLowLatency = signal<boolean>(true);
-  protected readonly applyingSettings = signal<boolean>(false);
-
-  /** True when the user has edited any draft value vs. the live BE settings. */
-  protected readonly settingsDirty = computed(() => {
-    const live = this.audioSettings();
-    if (!live) return false;
-    return (
-      live.captureBufferMs  !== this.draftCaptureBufferMs()  ||
-      live.renderLatencyMs  !== this.draftRenderLatencyMs()  ||
-      live.preferLowLatency !== this.draftPreferLowLatency()
-    );
-  });
-
   protected readonly latestMeasurement = computed<MeasurementRecord | null>(() => {
     const map = this.measurements();
     let latest: MeasurementRecord | null = null;
@@ -281,17 +249,36 @@ export class SignalFlowComponent implements OnInit {
     return result;
   });
 
-  protected readonly viewBox = computed(() => {
+  /**
+   * Natural pixel dimensions of the diagram. Width is constant (two
+   * columns + gap); height grows with whichever side has more devices,
+   * plus extra room when a bridge loop is drawn beneath the grid.
+   *
+   * The SVG's <c>viewBox</c> is locked to these values 1:1 and the SVG's
+   * rendered height attribute is bound to <c>height</c> so each device
+   * row keeps a fixed pixel size regardless of how many channels are
+   * open. Without this binding the previous fixed CSS height of 600 px
+   * would scale 20+ rows down to unreadable.
+   */
+  private readonly diagramSize = computed(() => {
     const ins  = this.inputs().length;
     const outs = this.outputs().length;
     const rows = Math.max(ins, outs, 1);
     const width  = SIDE_PADDING * 2 + NODE_WIDTH * 2 + COLUMN_GAP;
     const baseHeight = NODE_TOP + rows * (NODE_HEIGHT + NODE_GAP) + NODE_GAP;
-    // Bridge loops draw beneath the node grid; reserve space so they don't
-    // get clipped by the viewBox.
+    // Bridge loops draw beneath the node grid; reserve space so they
+    // don't get clipped by the viewBox.
     const bridgeRoom = this.virtualBridges().length > 0 ? BRIDGE_LOOP_DEPTH + 30 : 0;
-    return `0 0 ${width} ${baseHeight + bridgeRoom}`;
+    return { width, height: baseHeight + bridgeRoom };
   });
+
+  protected readonly viewBox = computed(() => {
+    const { width, height } = this.diagramSize();
+    return `0 0 ${width} ${height}`;
+  });
+
+  /** Pixel height bound to the SVG's <c>height</c> attribute. */
+  protected readonly diagramHeight = computed(() => this.diagramSize().height);
 
   protected readonly routes = computed<RouteWithLatency[]>(() => {
     const e        = this.estimate();
@@ -438,7 +425,6 @@ export class SignalFlowComponent implements OnInit {
 
   ngOnInit(): void {
     void this.refresh();
-    void this.refreshSettings();
   }
 
   protected refresh(): Promise<void> {
@@ -449,69 +435,6 @@ export class SignalFlowComponent implements OnInit {
       .then((e) => this.estimate.set(e))
       .catch((err) => this.errorMessage.set(this.formatError(err)))
       .finally(() => this.busy.set(false));
-  }
-
-  protected refreshSettings(): Promise<void> {
-    return this.ipc
-      .call<AudioSettings>('getAudioSettings')
-      .then((s) => {
-        this.audioSettings.set(s);
-        this.draftCaptureBufferMs.set(s.captureBufferMs);
-        this.draftRenderLatencyMs.set(s.renderLatencyMs);
-        this.draftPreferLowLatency.set(s.preferLowLatency);
-      })
-      .catch((err) => this.errorMessage.set(this.formatError(err)));
-  }
-
-  /**
-   * Push the draft values to the BE. The BE rebuilds the audio engine
-   * with the new buffer sizes, then we re-fetch the latency estimate so
-   * the diagram's "ms capture / ms render" labels reflect what the OS
-   * actually granted (might differ slightly from the requested ms).
-   */
-  protected applySettings(): Promise<void> {
-    if (!this.settingsDirty() || this.applyingSettings()) return Promise.resolve();
-    this.applyingSettings.set(true);
-    this.errorMessage.set(null);
-
-    const payload = {
-      captureBufferMs:  this.draftCaptureBufferMs(),
-      renderLatencyMs:  this.draftRenderLatencyMs(),
-      preferLowLatency: this.draftPreferLowLatency(),
-    };
-    return this.ipc
-      .call<AudioSettings>('setAudioSettings', payload, 8000)
-      .then((s) => {
-        this.audioSettings.set(s);
-        this.draftCaptureBufferMs.set(s.captureBufferMs);
-        this.draftRenderLatencyMs.set(s.renderLatencyMs);
-        this.draftPreferLowLatency.set(s.preferLowLatency);
-      })
-      .then(() => this.refresh())
-      .catch((err) => this.errorMessage.set(this.formatError(err)))
-      .finally(() => this.applyingSettings.set(false));
-  }
-
-  protected resetSettingsDraft(): void {
-    const live = this.audioSettings();
-    if (!live) return;
-    this.draftCaptureBufferMs.set(live.captureBufferMs);
-    this.draftRenderLatencyMs.set(live.renderLatencyMs);
-    this.draftPreferLowLatency.set(live.preferLowLatency);
-  }
-
-  protected onCaptureBufferInput(value: string): void {
-    const n = Number(value);
-    if (Number.isFinite(n)) this.draftCaptureBufferMs.set(Math.round(n));
-  }
-
-  protected onRenderLatencyInput(value: string): void {
-    const n = Number(value);
-    if (Number.isFinite(n)) this.draftRenderLatencyMs.set(Math.round(n));
-  }
-
-  protected onPreferLowLatencyToggle(value: boolean): void {
-    this.draftPreferLowLatency.set(value);
   }
 
   /**

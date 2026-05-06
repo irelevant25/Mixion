@@ -23,7 +23,7 @@ namespace Mixion.Host.Tests;
 public class DspTests
 {
     private const int  Fs = 48_000;
-    private const int  Block = MixEngine.BlockFrames;
+    private const int  Block = MixEngine.DefaultBlockFrames;
 
     private static float[] Sine(int frames, float freq, float amplitude = 0.5f, int sampleRate = Fs)
     {

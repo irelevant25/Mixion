@@ -39,6 +39,7 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
     private Thread?              _captureThread;
     private IntPtr               _mmcssHandle;
     private volatile bool        _running;
+    private int                  _bufferFrames;
 
     public string     Id           => _id;
     public string     FriendlyName => _friendlyName;
@@ -47,6 +48,7 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
     public int        BitsPerSample  => _format.BitsPerSample;
     public RingBuffer Ring         => _ring;
     public int        BufferMilliseconds => _bufferMs;
+    public int        BufferFrames => _bufferFrames;
     public event EventHandler? DataReady;
 
     /// <summary>
@@ -159,6 +161,7 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
                     $"IAudioClient3::GetService(IAudioCaptureClient) failed. HRESULT 0x{hr:X8}.");
             _captureClient = (IAudioCaptureClient)captureService;
 
+            _bufferFrames = (int)period;
             var bufferMs = (int)Math.Ceiling(period * 1000.0 / _format.SampleRate);
             return Math.Max(1, bufferMs);
         }

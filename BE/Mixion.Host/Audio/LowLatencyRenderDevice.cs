@@ -39,6 +39,7 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
     private IAudioRenderClient? _renderClient;
     private IntPtr              _eventHandle = IntPtr.Zero;
     private uint                _bufferFrames;
+    private int                 _periodFrames;
     private Thread?             _renderThread;
     private IntPtr              _mmcssHandle;
     private volatile bool       _running;
@@ -50,6 +51,9 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
     public int        BitsPerSample => _format.BitsPerSample;
     public RingBuffer Ring         => _ring;
     public int        LatencyMs    => _latencyMs;
+    public int        BufferFrames => _periodFrames;
+    public RenderMode Mode         => RenderMode.SharedLowLatency;
+    public string? ExclusiveFallbackReason { get; set; }
 
     public LowLatencyRenderDevice(MMDevice device, int ringCapacityFrames)
     {
@@ -157,20 +161,26 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
                     $"IAudioClient3::GetService(IAudioRenderClient) failed. HRESULT 0x{hr:X8}.");
             _renderClient = (IAudioRenderClient)renderService;
 
-            // Pre-fill with silence so Start has something to play on the
-            // first device tick — without this the engine briefly underruns
-            // and some drivers report glitches in the WASAPI session log.
-            hr = _renderClient.GetBuffer(_bufferFrames, out var primePtr);
+            // Pre-fill ONE engine period with silence — just enough so Start
+            // has something to play on the first device tick without
+            // underrunning. Priming the full _bufferFrames (typically 2–3×
+            // the engine period) was leaving user audio that-many frames
+            // behind real time at all times; capping the prime at one period
+            // gives the audio thread a single tick of headroom and nothing
+            // more.
+            var primeFrames = period < _bufferFrames ? period : _bufferFrames;
+            hr = _renderClient.GetBuffer(primeFrames, out var primePtr);
             if (hr >= 0 && primePtr != IntPtr.Zero)
             {
-                var primeFloats = (int)_bufferFrames * _format.Channels;
+                var primeFloats = (int)primeFrames * _format.Channels;
                 if (primeFloats > _deviceScratch.Length)
                     Array.Resize(ref _deviceScratch, primeFloats);
                 Array.Clear(_deviceScratch, 0, primeFloats);
                 Marshal.Copy(_deviceScratch, 0, primePtr, primeFloats);
-                _renderClient.ReleaseBuffer(_bufferFrames, 0);
+                _renderClient.ReleaseBuffer(primeFrames, 0);
             }
 
+            _periodFrames = (int)period;
             var latencyMs = (int)Math.Ceiling(period * 1000.0 / _format.SampleRate);
             return Math.Max(1, latencyMs);
         }

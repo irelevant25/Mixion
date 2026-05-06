@@ -66,6 +66,9 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
     public int    BitsPerSample  => _format.BitsPerSample;
     public RingBuffer Ring     => _ring;
     public int    BufferMilliseconds => (int)(BufferDurationHns / 10_000);
+    // Process loopback uses a fixed buffer (BufferDurationHns); convert to
+    // frames at the engine sample rate for MixEngine alignment.
+    public int    BufferFrames => Math.Max(1, BufferMilliseconds * _sampleRate / 1000);
     public event EventHandler? DataReady;
 
     /// <summary>Process id this capture was bound to. Public for diagnostics.</summary>

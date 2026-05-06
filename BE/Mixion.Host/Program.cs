@@ -39,7 +39,12 @@ internal static class Program
         // (driver probe, mutex acquisition, Kestrel bind) lands on disk
         // instead of vanishing with the console window. (BE-091)
         CrashLog.Install();
-        CrashLog.Write("INFO", $"Host starting (pid {Environment.ProcessId})", null);
+        CrashLog.Write(
+            "INFO",
+            $"Host starting (pid {Environment.ProcessId}); raw args=[{string.Join(' ', args)}]; "
+            + $"parsed port={(cli.Port?.ToString() ?? "<random>")} noBrowser={cli.NoBrowser} "
+            + $"skipDriverCheck={cli.SkipDriverCheck}",
+            null);
 
         // Allocate (or borrow) a console BEFORE anything writes to stdout
         // so the very first `Console.Write*` reaches the user. WinExe builds

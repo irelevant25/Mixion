@@ -33,10 +33,10 @@ public class MixEngineBlockTests
     private static Buffers AllocBuffers()
     {
         return new Buffers(
-            InL:    new[] { new float[MixEngine.BlockFrames] },
-            InR:    new[] { new float[MixEngine.BlockFrames] },
-            OutL:   new[] { new float[MixEngine.BlockFrames] },
-            OutR:   new[] { new float[MixEngine.BlockFrames] },
+            InL:    new[] { new float[MixEngine.DefaultBlockFrames] },
+            InR:    new[] { new float[MixEngine.DefaultBlockFrames] },
+            OutL:   new[] { new float[MixEngine.DefaultBlockFrames] },
+            OutR:   new[] { new float[MixEngine.DefaultBlockFrames] },
             InGain: new[] { 1f },
             OutGain:new[] { 1f });
     }
@@ -67,7 +67,7 @@ public class MixEngineBlockTests
             Fill(b.InL[0], inputAmplitude);
             Fill(b.InR[0], inputAmplitude);
             MixEngine.MixBlock(
-                MixEngine.BlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
+                MixEngine.DefaultBlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
                 b.InGain, b.OutGain,
                 MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
             lastPeak = Peak(b.OutL[0]);
@@ -99,7 +99,7 @@ public class MixEngineBlockTests
             Fill(b.InL[0], 0.5f);
             Fill(b.InR[0], 0.5f);
             MixEngine.MixBlock(
-                MixEngine.BlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
+                MixEngine.DefaultBlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
                 b.InGain, b.OutGain,
                 MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
         }
@@ -142,7 +142,7 @@ public class MixEngineBlockTests
             Fill(b.InL[0], 0.5f);
             Fill(b.InR[0], 0.5f);
             MixEngine.MixBlock(
-                MixEngine.BlockFrames, muted, b.InL, b.InR, b.OutL, b.OutR,
+                MixEngine.DefaultBlockFrames, muted, b.InL, b.InR, b.OutL, b.OutR,
                 b.InGain, b.OutGain,
                 MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
         }
@@ -154,7 +154,7 @@ public class MixEngineBlockTests
             Fill(b.InL[0], 0.5f);
             Fill(b.InR[0], 0.5f);
             MixEngine.MixBlock(
-                MixEngine.BlockFrames, unmuted, b.InL, b.InR, b.OutL, b.OutR,
+                MixEngine.DefaultBlockFrames, unmuted, b.InL, b.InR, b.OutL, b.OutR,
                 b.InGain, b.OutGain,
                 MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
             lastPeak = Peak(b.OutL[0]);
@@ -172,7 +172,7 @@ public class MixEngineBlockTests
             Fill(b.InL[0], 0.5f);
             Fill(b.InR[0], 0.5f);
             MixEngine.MixBlock(
-                MixEngine.BlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
+                MixEngine.DefaultBlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
                 b.InGain, b.OutGain,
                 MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
         }

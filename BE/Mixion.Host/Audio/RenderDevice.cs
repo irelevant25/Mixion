@@ -29,6 +29,12 @@ public sealed class RenderDevice : IRenderDevice
     public int    BitsPerSample => _output.OutputWaveFormat.BitsPerSample;
     public RingBuffer Ring     => _ring;
     public int    LatencyMs    { get; }
+    // Legacy shared-mode WASAPI doesn't surface the granted period directly.
+    // Approximate from the configured ms — used by MixEngine for block-size
+    // alignment.
+    public int    BufferFrames => Math.Max(1, LatencyMs * SampleRate / 1000);
+    public RenderMode Mode => RenderMode.Shared;
+    public string? ExclusiveFallbackReason { get; set; }
 
     public RenderDevice(MMDevice device, int ringCapacityFrames, int latencyMs = 10)
     {

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -25,6 +26,33 @@ public sealed record AudioSettings(
     public const int  DefaultRenderLatencyMs  = 10;
     public const bool DefaultPreferLowLatency = true;
 
+    /// <summary>
+    /// Default render-side latency in ms when a device is opened in WASAPI
+    /// exclusive mode. Exclusive mode bypasses the system mixer so it can
+    /// honour periods well below the 10 ms shared-mode floor — 5 ms is a
+    /// safe starting point for most consumer hardware.
+    /// </summary>
+    public const int  DefaultExclusiveRenderLatencyMs = 5;
+
+    /// <summary>
+    /// WASAPI <c>MMDevice.ID</c>s the user has opted into exclusive-mode
+    /// render. Exclusive mode locks the device to our process — no other
+    /// Windows app can play through it while the engine holds it — but
+    /// drops a few ms of shared-mode mixer latency in exchange. Empty by
+    /// default; toggled per-device via the <c>setDeviceExclusive</c> RPC.
+    /// </summary>
+    public ImmutableHashSet<string> ExclusiveRenderDeviceIds { get; init; } =
+        ImmutableHashSet<string>.Empty;
+
+    /// <summary>
+    /// Per-device override of <see cref="DefaultExclusiveRenderLatencyMs"/>.
+    /// Keyed by <c>MMDevice.ID</c>; missing entries fall back to the
+    /// default. Exposed so a user with picky hardware can dial up the
+    /// exclusive-mode buffer without giving up exclusive mode entirely.
+    /// </summary>
+    public ImmutableDictionary<string, int> ExclusiveRenderLatencyMsByDeviceId { get; init; } =
+        ImmutableDictionary<string, int>.Empty;
+
     public static readonly AudioSettings Default = new(
         CaptureBufferMs:  DefaultCaptureBufferMs,
         RenderLatencyMs:  DefaultRenderLatencyMs,
@@ -33,12 +61,48 @@ public sealed record AudioSettings(
     /// <summary>
     /// Clamp buffer values to the allowed range so a corrupt JSON or a
     /// malformed RPC payload can't put us into "0 ms = blow up the audio
-    /// engine" territory.
+    /// engine" territory. Also normalises any null collections so the
+    /// engine never has to null-check at lookup time.
     /// </summary>
-    public AudioSettings Validated() => new(
-        CaptureBufferMs:  Math.Clamp(CaptureBufferMs, MinBufferMs, MaxBufferMs),
-        RenderLatencyMs:  Math.Clamp(RenderLatencyMs, MinBufferMs, MaxBufferMs),
-        PreferLowLatency: PreferLowLatency);
+    public AudioSettings Validated()
+    {
+        var ids = ExclusiveRenderDeviceIds ?? ImmutableHashSet<string>.Empty;
+        var ms  = ExclusiveRenderLatencyMsByDeviceId ?? ImmutableDictionary<string, int>.Empty;
+
+        // Clamp per-device latency overrides too. A user-supplied 0 here
+        // would crash WASAPI Initialize the same way 0 ms shared-mode
+        // would, so the same bounds apply.
+        var clampedMs = ms;
+        foreach (var kvp in ms)
+        {
+            var clamped = Math.Clamp(kvp.Value, MinBufferMs, MaxBufferMs);
+            if (clamped != kvp.Value)
+                clampedMs = clampedMs.SetItem(kvp.Key, clamped);
+        }
+
+        return new AudioSettings(
+            CaptureBufferMs:  Math.Clamp(CaptureBufferMs, MinBufferMs, MaxBufferMs),
+            RenderLatencyMs:  Math.Clamp(RenderLatencyMs, MinBufferMs, MaxBufferMs),
+            PreferLowLatency: PreferLowLatency)
+        {
+            ExclusiveRenderDeviceIds            = ids,
+            ExclusiveRenderLatencyMsByDeviceId  = clampedMs,
+        };
+    }
+
+    /// <summary>
+    /// Latency in ms to request when opening <paramref name="deviceId"/> in
+    /// exclusive mode — per-device override if present, otherwise the
+    /// default. Caller should still gate on <see cref="IsExclusiveRender"/>.
+    /// </summary>
+    public int GetExclusiveRenderLatencyMs(string deviceId)
+        => ExclusiveRenderLatencyMsByDeviceId.TryGetValue(deviceId, out var ms)
+            ? ms
+            : DefaultExclusiveRenderLatencyMs;
+
+    /// <summary>True when <paramref name="deviceId"/> is opted into exclusive-mode render.</summary>
+    public bool IsExclusiveRender(string deviceId)
+        => ExclusiveRenderDeviceIds.Contains(deviceId);
 }
 
 /// <summary>

@@ -1,0 +1,154 @@
+@if (!hydrated()) {
+  <p class="loading">Loading mixer state…</p>
+} @else {
+  <section class="page">
+    <header>
+      <h2>Audio settings</h2>
+      <button type="button" class="refresh" (click)="refresh()">Refresh</button>
+    </header>
+
+    @if (errorMessage(); as msg) {
+      <p class="error" role="alert">
+        {{ msg }}
+        <button type="button" class="dismiss" (click)="dismissError()">×</button>
+      </p>
+    }
+
+    <div class="card">
+      <h3>Audio engine</h3>
+      <p class="card-caption">
+        Buffer sizes for the regular shared-mode WASAPI path. Lower
+        values reduce latency but can cause crackling on slower
+        hardware. The IAudioClient3 low-latency path uses the OS-
+        reported minimum engine period regardless of these values
+        — uncheck <em>Prefer low-latency</em> to force the regular
+        path with the values below.
+      </p>
+      <p class="engine-block">
+        Current engine block: <strong>{{ engineBlockMsLabel() }}</strong>
+        — derived from the slowest active device's granted period.
+      </p>
+
+      <div class="controls">
+        <label>
+          <span class="ctl-name">Capture buffer</span>
+          <span class="ctl-row">
+            <input
+              type="number"
+              [value]="draftCaptureBufferMs()"
+              [min]="audioSettings()?.minBufferMs ?? 1"
+              [max]="audioSettings()?.maxBufferMs ?? 200"
+              step="1"
+              (input)="onCaptureBufferInput($any($event.target).value)" />
+            <span class="unit">ms</span>
+          </span>
+        </label>
+        <label>
+          <span class="ctl-name">Render latency</span>
+          <span class="ctl-row">
+            <input
+              type="number"
+              [value]="draftRenderLatencyMs()"
+              [min]="audioSettings()?.minBufferMs ?? 1"
+              [max]="audioSettings()?.maxBufferMs ?? 200"
+              step="1"
+              (input)="onRenderLatencyInput($any($event.target).value)" />
+            <span class="unit">ms</span>
+          </span>
+        </label>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            [checked]="draftPreferLowLatency()"
+            (change)="onPreferLowLatencyToggle($any($event.target).checked)" />
+          <span>Prefer low-latency (IAudioClient3)</span>
+        </label>
+        <span class="actions">
+          <button
+            type="button"
+            class="apply-btn"
+            (click)="applySettings()"
+            [disabled]="!settingsDirty() || applyingSettings()">
+            @if (applyingSettings()) { Applying… } @else { Apply }
+          </button>
+          <button
+            type="button"
+            class="reset-btn"
+            (click)="resetSettingsDraft()"
+            [disabled]="!settingsDirty() || applyingSettings()">
+            Reset
+          </button>
+        </span>
+      </div>
+      <p class="hint">
+        Applying rebuilds the audio engine; channels, gain, and routing
+        are preserved. Allowed range:
+        {{ audioSettings()?.minBufferMs ?? 1 }}–{{ audioSettings()?.maxBufferMs ?? 200 }} ms.
+      </p>
+    </div>
+
+    <div class="card exclusive">
+      <h3>Exclusive-mode outputs</h3>
+      <p class="card-caption">
+        Bypasses the Windows shared-mode mixer for the selected output —
+        smaller buffer (default {{ audioSettings()?.defaultExclusiveRenderLatencyMs ?? 5 }} ms)
+        but the device becomes <strong>locked</strong>: other apps
+        (Spotify, Discord, system sounds) won't play through it while
+        Mixion is running. Virtual cables (CABLE Input, Voicemeeter Input)
+        usually reject exclusive mode and silently fall back to shared.
+      </p>
+
+      @if (hasExclusiveFallback()) {
+        <p class="warn">
+          One or more devices below are opted into exclusive mode but
+          opened in <strong>shared</strong> mode instead. Common causes:
+          the device's exclusive-mode format must match
+          <em>Sound&nbsp;→&nbsp;Properties&nbsp;→&nbsp;Advanced</em> exactly
+          (e.g. 16-bit, 48000&nbsp;Hz); virtual cables typically reject
+          exclusive entirely; another app may be holding the device.
+          Per-device reasons are shown inline.
+        </p>
+      }
+
+      @if (exclusiveDeviceRows().length === 0) {
+        <p class="empty">No render outputs detected.</p>
+      } @else {
+        <ul class="exclusive-list">
+          @for (row of exclusiveDeviceRows(); track row.id) {
+            <li
+              [class.unavailable]="!row.available"
+              [class.fallback]="isFallback(row)">
+              <div class="row-main">
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    [checked]="row.intent"
+                    [disabled]="row.busy || !!togglingExclusiveId() || !row.available"
+                    (change)="toggleExclusive(row.id, $any($event.target).checked)" />
+                  <span class="device-name">{{ row.name }}</span>
+                </label>
+                <span class="device-buffer">{{ row.bufferMs }} ms</span>
+                @if (row.busy) {
+                  <span class="badge busy">Rebuilding…</span>
+                } @else if (isFallback(row)) {
+                  <span class="badge fallback" title="Driver refused exclusive mode; running shared.">
+                    fallback → {{ modeBadgeLabel(row.actual) }}
+                  </span>
+                } @else {
+                  <span class="badge" [class.exclusive]="row.actual === 'exclusive'">
+                    {{ modeBadgeLabel(row.actual) }}
+                  </span>
+                }
+              </div>
+              @if (isFallback(row) && row.fallbackReason) {
+                <p class="row-reason">
+                  Driver refused: <code>{{ row.fallbackReason }}</code>
+                </p>
+              }
+            </li>
+          }
+        </ul>
+      }
+    </div>
+  </section>
+}

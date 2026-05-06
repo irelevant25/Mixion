@@ -46,9 +46,57 @@ public interface IRenderDevice : IDisposable
     /// </summary>
     int LatencyMs { get; }
 
+    /// <summary>
+    /// Granted (or configured) period in stereo frames at <see cref="SampleRate"/>.
+    /// Low-latency devices report what the OS actually granted via
+    /// <c>GetSharedModeEnginePeriod</c>; legacy devices approximate from
+    /// <see cref="LatencyMs"/>. Used by <see cref="MixEngine"/> to align its
+    /// mix block size with the slowest device on the bus.
+    /// </summary>
+    int BufferFrames { get; }
+
+    /// <summary>
+    /// How this device was actually opened — independent of what the user
+    /// asked for. A device the user opted into exclusive mode that fell
+    /// back (virtual cable, picky driver) reports the resolved mode
+    /// (<see cref="RenderMode.SharedLowLatency"/> or
+    /// <see cref="RenderMode.Shared"/>), not <see cref="RenderMode.Exclusive"/>.
+    /// Surfaced to the FE so the user sees what they got, not what they
+    /// requested.
+    /// </summary>
+    RenderMode Mode { get; }
+
+    /// <summary>
+    /// Set when the user opted this device into exclusive mode but the
+    /// driver refused — captures the underlying exception message so the
+    /// FE can show <em>why</em> (format mismatch, device in use,
+    /// alignment, etc.) instead of a generic "fell back" warning.
+    /// Mutable so <see cref="EngineFactory"/> can stamp the reason onto
+    /// whichever shared-mode device class it ended up using as the
+    /// fallback. Null when no exclusive attempt was made or the attempt
+    /// succeeded.
+    /// </summary>
+    string? ExclusiveFallbackReason { get; set; }
+
     /// <summary>Begin pulling from <see cref="Ring"/> and rendering to the device.</summary>
     void Start();
 
     /// <summary>Stop rendering. Implementations should swallow "device gone" errors.</summary>
     void Stop();
+}
+
+/// <summary>
+/// How a render device was actually opened by <see cref="EngineFactory"/>.
+/// Wire enum — the FE shows different badges per value.
+/// </summary>
+public enum RenderMode
+{
+    /// <summary>Legacy shared-mode WASAPI via NAudio — buffer ms set by user, OS may round up.</summary>
+    Shared = 0,
+
+    /// <summary><c>IAudioClient3::InitializeSharedAudioStream</c> at the OS-reported minimum engine period (~3 ms).</summary>
+    SharedLowLatency = 1,
+
+    /// <summary>WASAPI exclusive mode — device is locked to the engine; smallest latency at the cost of other apps' audio.</summary>
+    Exclusive = 2,
 }

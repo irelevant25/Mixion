@@ -32,13 +32,31 @@ public sealed record SpectrumTapConfig(SpectrumFrame.BusTag Bus, int Channel);
 public sealed class MixEngine : IDisposable
 {
     /// <summary>
-    /// Mono frames processed per mix tick. 128 frames ≈ 2.7 ms @ 48 kHz —
-    /// matches a single shared-mode WASAPI engine period, so the tick
-    /// rhythm aligns with the OS instead of straddling two periods (which
-    /// would add ~5 ms of "always one period behind" latency on the render
-    /// side).
+    /// Default mono frames processed per mix tick when no devices report a
+    /// granted period. 128 frames ≈ 2.7 ms @ 48 kHz — matches the typical
+    /// shared-mode WASAPI engine period on Windows 10+.
+    /// Real engine instances pick their <see cref="BlockFrames"/> from the
+    /// minimum granted period across active devices, clamped to
+    /// [<see cref="MinBlockFrames"/>, <see cref="MaxBlockFrames"/>].
     /// </summary>
-    public const int BlockFrames = 128;
+    public const int DefaultBlockFrames = 128;
+
+    /// <summary>Hard floor on the resolved block size — going below ~32 frames is mostly per-tick overhead with no audible win.</summary>
+    public const int MinBlockFrames = 32;
+
+    /// <summary>Hard ceiling — even slow virtual cables shouldn't push us past ~10 ms of mix-block latency.</summary>
+    public const int MaxBlockFrames = 512;
+
+    /// <summary>
+    /// Resolved mono frames processed per mix tick. Derived in the
+    /// constructor from the minimum granted period across active capture
+    /// and render devices, clamped to
+    /// [<see cref="MinBlockFrames"/>, <see cref="MaxBlockFrames"/>].
+    /// Aligning with the slowest device's period keeps the mix tick from
+    /// straddling two device periods (which would add "always one period
+    /// behind" latency on the render side).
+    /// </summary>
+    public int BlockFrames { get; }
 
     /// <summary>
     /// Per-sample one-pole coefficient for the gain smoother. Picked so that
@@ -266,6 +284,10 @@ public sealed class MixEngine : IDisposable
                     $"but capture is {rate} Hz. Match the device formats in Windows sound settings.");
         }
         SampleRate = rate;
+        BlockFrames = ResolveBlockFrames(_captures, _renders);
+        _logger.LogInformation(
+            "MixEngine block size: {BlockFrames} frames (~{Ms} ms @ {Rate} Hz)",
+            BlockFrames, (BlockFrames * 1000.0 / rate).ToString("F2"), rate);
 
         // BE-027 / BE-080: pre-allocate per-input and per-output scratch
         // blocks. The mix loop never touches the GC after this point.
@@ -383,6 +405,30 @@ public sealed class MixEngine : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Pick the mix block size from the minimum granted period across all
+    /// active devices. Going smaller than the slowest device's period would
+    /// just spin extra ticks on starved rings; going larger straddles
+    /// device periods and adds latency. Clamped so a misbehaving device
+    /// reporting a tiny or huge value can't poison the engine.
+    /// </summary>
+    private static int ResolveBlockFrames(IAudioCaptureSource?[] captures, IRenderDevice?[] renders)
+    {
+        var min = int.MaxValue;
+        foreach (var c in captures)
+        {
+            if (c is null) continue;
+            if (c.BufferFrames > 0 && c.BufferFrames < min) min = c.BufferFrames;
+        }
+        foreach (var r in renders)
+        {
+            if (r is null) continue;
+            if (r.BufferFrames > 0 && r.BufferFrames < min) min = r.BufferFrames;
+        }
+        if (min == int.MaxValue) return DefaultBlockFrames;
+        return Math.Clamp(min, MinBlockFrames, MaxBlockFrames);
+    }
+
     private interface IAudioDevice { int SampleRate { get; } }
     private sealed record CaptureAdapter(IAudioCaptureSource Inner) : IAudioDevice
     {
@@ -408,9 +454,51 @@ public sealed class MixEngine : IDisposable
     {
         if (_running) return;
 
-        foreach (var c in _captures) c?.Start();
-        foreach (var r in _renders)  r?.Start();
-        foreach (var l in _renderLoopbacks) l?.Start();
+        // Track everything we successfully start so we can roll it back
+        // if a later step throws. Without this, a failure on (say) the
+        // loopback meters would leak captures + renders that already had
+        // their WASAPI clients running — including any that happen to be
+        // holding an exclusive-mode lock on a physical device.
+        var startedCaptures = new List<IAudioCaptureSource>();
+        var startedRenders  = new List<IRenderDevice>();
+        var startedLoopbacks = new List<LoopbackCapture>();
+
+        try
+        {
+            foreach (var c in _captures)
+            {
+                if (c is null) continue;
+                c.Start();
+                startedCaptures.Add(c);
+            }
+            foreach (var r in _renders)
+            {
+                if (r is null) continue;
+                r.Start();
+                startedRenders.Add(r);
+            }
+            foreach (var l in _renderLoopbacks)
+            {
+                if (l is null) continue;
+                l.Start();
+                startedLoopbacks.Add(l);
+            }
+        }
+        catch
+        {
+            // Roll back in reverse order. Stop first, then dispose — Stop
+            // releases the device cleanly, Dispose drops the COM refs.
+            // Each call is wrapped because a device that's already in a
+            // bad state may throw on Stop too, and we still need to drain
+            // the rest.
+            foreach (var l in startedLoopbacks) try { l.Stop();   } catch { /* best effort */ }
+            foreach (var r in startedRenders)  try { r.Stop();    } catch { /* best effort */ }
+            foreach (var c in startedCaptures) try { c.Stop();    } catch { /* best effort */ }
+            foreach (var l in startedLoopbacks) try { l.Dispose(); } catch { /* best effort */ }
+            foreach (var r in startedRenders)  try { r.Dispose(); } catch { /* best effort */ }
+            foreach (var c in startedCaptures) try { c.Dispose(); } catch { /* best effort */ }
+            throw;
+        }
 
         _running = true;
         _thread  = new Thread(Loop)

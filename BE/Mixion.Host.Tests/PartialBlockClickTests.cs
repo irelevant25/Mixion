@@ -37,10 +37,10 @@ public class PartialBlockClickTests
     private static Buffers AllocBuffers()
     {
         return new Buffers(
-            InL:    new[] { new float[MixEngine.BlockFrames] },
-            InR:    new[] { new float[MixEngine.BlockFrames] },
-            OutL:   new[] { new float[MixEngine.BlockFrames] },
-            OutR:   new[] { new float[MixEngine.BlockFrames] },
+            InL:    new[] { new float[MixEngine.DefaultBlockFrames] },
+            InR:    new[] { new float[MixEngine.DefaultBlockFrames] },
+            OutL:   new[] { new float[MixEngine.DefaultBlockFrames] },
+            OutR:   new[] { new float[MixEngine.DefaultBlockFrames] },
             InGain: new[] { 1f },
             OutGain:new[] { 1f });
     }
@@ -78,7 +78,7 @@ public class PartialBlockClickTests
         var stepBefore = MathF.Abs(b.InL[0][fillSamples] - b.InL[0][fillSamples - 1]);
 
         MixEngine.MixBlock(
-            MixEngine.BlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
+            MixEngine.DefaultBlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
             b.InGain, b.OutGain,
             MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
 
@@ -101,7 +101,7 @@ public class PartialBlockClickTests
         }
 
         MixEngine.MixBlock(
-            MixEngine.BlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
+            MixEngine.DefaultBlockFrames, state, b.InL, b.InR, b.OutL, b.OutR,
             b.InGain, b.OutGain,
             MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
 

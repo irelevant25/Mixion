@@ -23,16 +23,24 @@ public static class LatencyHandlers
     /// reflect the device's mix format (display-only — the engine resamples
     /// nothing and works in 32-bit float mono internally for inputs, stereo
     /// for outputs).
+    ///
+    /// <see cref="Mode"/> is null for capture channels (they're always
+    /// shared / IAudioClient3 / process-loopback in v1) and one of
+    /// "shared" / "sharedLowLatency" / "exclusive" for render channels.
+    /// Used by the FE to show what the device actually resolved to,
+    /// independent of what the user asked for.
     /// </summary>
     public sealed record ChannelLatencyDto(
-        int    Index,
-        string Id,
-        string Name,
-        int    BufferMs,
-        int    Channels,
-        int    BitsPerSample,
-        int    SampleRate,
-        bool   Available);
+        int     Index,
+        string  Id,
+        string  Name,
+        int     BufferMs,
+        int     Channels,
+        int     BitsPerSample,
+        int     SampleRate,
+        bool    Available,
+        string? Mode = null,
+        string? ExclusiveFallbackReason = null);
 
     /// <summary>Wire shape for the whole estimate. Engine block ms is shared by every route.</summary>
     public sealed record LatencyEstimateDto(
@@ -119,15 +127,22 @@ public static class LatencyHandlers
                     Channels:      dev?.DestChannels ?? 0,
                     BitsPerSample: dev?.BitsPerSample ?? 0,
                     SampleRate:    dev?.SampleRate    ?? 0,
-                    Available:     dev is not null && (ch?.Available ?? true));
+                    Available:     dev is not null && (ch?.Available ?? true),
+                    // camelCase wire form — FE switches on it directly. Null
+                    // when the slot has no backing device (channel kept
+                    // around for the user's settings but the device is
+                    // unplugged).
+                    Mode:                    dev is null ? null : RenderModeToWire(dev.Mode),
+                    ExclusiveFallbackReason: dev?.ExclusiveFallbackReason);
             }
 
             var rate          = engine.SampleRate;
-            var engineBlockMs = rate > 0 ? MixEngine.BlockFrames * 1000.0 / rate : 0.0;
+            var blockFrames   = engine.BlockFrames;
+            var engineBlockMs = rate > 0 ? blockFrames * 1000.0 / rate : 0.0;
 
             var dto = new LatencyEstimateDto(
                 SampleRate:    rate,
-                BlockFrames:   MixEngine.BlockFrames,
+                BlockFrames:   blockFrames,
                 EngineBlockMs: engineBlockMs,
                 Inputs:        inputs,
                 Outputs:       outputs);
@@ -226,6 +241,20 @@ public static class LatencyHandlers
                 Threshold:          DetectionThreshold);
         });
     }
+
+    /// <summary>
+    /// Convert <see cref="RenderMode"/> to the camelCase string the FE
+    /// expects on the wire. Hand-rolled rather than letting
+    /// <see cref="object.ToString"/> + lowercase mangle <c>SharedLowLatency</c>
+    /// into <c>sharedlowlatency</c>.
+    /// </summary>
+    private static string RenderModeToWire(RenderMode mode) => mode switch
+    {
+        RenderMode.Shared           => "shared",
+        RenderMode.SharedLowLatency => "sharedLowLatency",
+        RenderMode.Exclusive        => "exclusive",
+        _                           => "shared",
+    };
 
     /// <summary>
     /// Linear fade envelope. Returns 1.0 in the body of the burst and ramps
