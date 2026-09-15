@@ -24,8 +24,9 @@ FE/
     │       ├── app.routes.ts
     │       ├── core/
     │       │   ├── session.service.ts          # GET /api/session at app init; holds token + initial state
-    │       │   ├── ipc.service.ts              # WS client, JSON-RPC, telemetry stream
-    │       │   ├── mixer-state.store.ts        # signals-based store
+    │       │   ├── ipc.service.ts              # WS client, JSON-RPC, server notifications, telemetry stream
+    │       │   ├── host-lifecycle.service.ts   # one live tab: close on host exit, retire older tabs
+    │       │   ├── mixer-state.store.ts        # signals-based store (+ applyTopology for host pushes)
     │       │   ├── current-preset.service.ts   # name of the preset the host is currently bound to
     │       │   └── preset-actions.service.ts   # shared list/save/load/rename/delete/clearCurrent flow
     │       ├── features/
@@ -47,7 +48,8 @@ FE/
     │       │       └── preset-manager.component.ts
     │       └── shell/
     │           ├── connection-banner.component.ts
-    │           └── error-page.component.ts     # shown when /api/session fails (host not running)
+    │           ├── error-page.component.ts     # shown when /api/session fails (host not running)
+    │           └── tab-closed.component.ts     # shown when this tab retired but the browser refused to close it
     └── tsconfig.json
 ```
 
@@ -111,12 +113,19 @@ APP_INITIALIZER
 ```ts
 class IpcService {
   readonly status = signal<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
-  readonly telemetry$: Observable<Float32Array>;     // hot, multicast, ~30 Hz
+  readonly hostExited = signal(false);                   // hostShutdown received / closed 1001 host-shutdown
+  readonly notifications$: Observable<RpcNotification>;  // server pushes, e.g. stateChanged
+  readonly telemetry$: Observable<Float32Array>;         // hot, multicast, ~30 Hz
   connect(token: string): Promise<void>;
+  disconnect(): void;
   call<T>(method: string, params?: unknown): Promise<T>;
-  notify(method: string, params?: unknown): void;    // no id, no response expected
+  notify(method: string, params?: unknown): void;        // no id, no response expected
 }
 ```
+
+The host pushes `stateChanged` when devices or apps come and go. `app.config.ts` merges it with `MixerStateStore.applyTopology`: the host owns the channel list, names and availability, while this tab keeps its own gain/mute/solo/pan/DSP/routes for channels it already knows (a push can race the tab's own RPCs). If the host applies the last preset after the page loaded (its audio engine started late), it pushes `sessionChanged` and the tab re-reads `/api/session` — mixer state, slot layout, preset name — the same way it does after a reconnect.
+
+When the host exits, `HostLifecycleService` closes the tab in packaged builds; under `ng serve` the tab keeps reconnecting instead (`CLOSE_TAB_ON_HOST_EXIT`). Browsers only let a script close a tab with a single history entry, so the nav links use `replaceUrl`. A newly opened Mixion tab retires older ones on the same origin (BroadcastChannel).
 
 The token is held in memory only — never written to `localStorage` or `sessionStorage`. On reload, the SPA re-fetches `/api/session` and gets a fresh token.
 
@@ -203,7 +212,7 @@ A processing drawer per channel — opens from an "FX" button on every input str
 
 ### M9 — Per-process loopback capture (FE side)
 
-The BE now exposes per-process loopback captures (`process:<pid>:<name>` channel ids, friendly names like `"chrome (app)"`) as additional entries in `MixerState.Inputs`. They flow through the **existing** `MixerStateStore.inputs()` signal, which means the slot-config dialog already lists them alongside physical mics and virtual cables — **no FE work was strictly required to ship the MVP**. The user picks a process from the same radio list as any other input device.
+The BE now exposes per-process loopback captures (`process:<name>` channel ids, friendly names like `"chrome (app)"`) as additional entries in `MixerState.Inputs`. They flow through the **existing** `MixerStateStore.inputs()` signal, which means the slot-config dialog already lists them alongside physical mics and virtual cables — **no FE work was strictly required to ship the MVP**. The user picks a process from the same radio list as any other input device.
 
 The tasks below are quality-of-life follow-ups for when the BE adds dynamic add/remove (BE-105 / BE-106).
 
@@ -211,7 +220,8 @@ The tasks below are quality-of-life follow-ups for when the BE adds dynamic add/
 |---|---|---|---|
 | FE-080 | Visually distinguish process inputs from device inputs in the slot-config dialog (e.g. an "app" pill next to the name; group under a sub-heading "Applications") | `features/channel-strip/slot-config-dialog.component.ts` | Process loopbacks render with a clear visual marker; physical devices unchanged |
 | FE-081 | Friendly-name strip: BE sends `"chrome (app)"`; FE strips the `(app)` suffix when the visual pill makes it redundant | `features/channel-strip/slot-config-dialog.component.ts` | Cleaner labels without losing the "this is a process" cue |
-| FE-084 | Refresh button in the slot-config dialog header. Calls `refreshDevices` RPC, then `MixerStateStore.replace()` with the returned state. Disabled + label flips to "Refreshing…" while in flight; surface RPC errors inline | `features/channel-strip/slot-config-dialog.component.ts`, `core/ipc.service.ts` | Apps started after the host launched (e.g. opening VLC) appear in the picker after a Refresh click without restarting the BE |
+| FE-084 | "Rescan" link in the slot-config dialog footer — a last resort, since the list updates by itself. Calls `refreshDevices` RPC, then `MixerStateStore.replace()` with the returned state. Disabled + "Rescanning…" while in flight; surface RPC errors inline | `features/channel-strip/slot-config-dialog/*`, `core/ipc.service.ts` | Something the device watcher missed appears after Rescan |
+| FE-087 | Apply host `stateChanged` pushes with `MixerStateStore.applyTopology` (host owns channel list / names / availability; the tab keeps its own settings for known channels) | `app.config.ts`, `core/mixer-state.store.ts` | Opening VLC adds it to the picker without Rescan; closing and reopening Chrome turns its strip red, then normal |
 | FE-085 | Render channels with `available === false` in red across the strip (border + name + "×" badge in header) and in the slot picker ("(no longer available)" annotation, red name). Filter unavailable channels out of the picker entirely if no slot binds to them — the spec is "channel strip stays put with red name; picker hides ghosts that no one is using" | `features/channel-strip/channel-strip.component.{html,css,ts}`, `features/channel-strip/slot-config-dialog.component.ts`, `core/mixer-state.store.ts` | Unplug the mic → the bound strip's name turns red, "×" badge appears, controls greyed; same device shows red in picker only as long as a slot still references it |
 | FE-086 | Per-row "×" detach button on process-loopback entries in the slot picker. Calls `removeProcessLoopback(channelId)`, hydrates store with returned state, unbinds local slots that were pointing at the removed id. Disabled while in flight; physical mics / virtual cables get no button (they're not removable) | `features/channel-strip/slot-config-dialog.component.ts` | Click "×" on Chrome → channel disappears, slot goes empty, no audio glitch outside the ~200 ms rebuild gap |
 | FE-082 *(after BE-110)* | "Add application" affordance using the existing `listAudioProcesses` RPC + an `addProcessLoopback` RPC that BE-110 unlocks (true atomic add). Lets the user attach an idle app that isn't currently producing audio without waiting for it to make sound and clicking Refresh | `features/channel-strip/slot-config-dialog.component.ts`, `core/ipc.service.ts` | User attaches any process by name; channel appears with no audio gap once BE-110 lands |
@@ -226,6 +236,7 @@ The tasks below are quality-of-life follow-ups for when the BE adds dynamic add/
 | FE-062 | Production build wired into `build.ps1`: `ng build --configuration=production`; output goes to `dist/mixion/browser/` | `FE/angular/angular.json` | `build.ps1` consumes the `browser/` subfolder when copying into `BE/.../wwwroot` |
 | FE-063 | Verify SPA fallback works: navigating directly to `/some/route` returns `index.html` and Angular's router takes over | `app.routes.ts` | Refreshing on `/preset-manager` doesn't 404 |
 | FE-064 | Set `<base href="./">` (relative) so the SPA works regardless of port and root path | `src/index.html` | Asset URLs resolve correctly when served from any host port |
+| FE-065 | One live tab: close the tab on `hostShutdown` (packaged builds), retire older Mixion tabs via BroadcastChannel, `replaceUrl` navigation, retired-tab screen when the browser refuses to close | `core/host-lifecycle.service.ts`, `shell/tab-closed/*`, `app.component.html` | Tray Exit closes the tab; restarting Mixion leaves exactly one tab |
 
 ---
 

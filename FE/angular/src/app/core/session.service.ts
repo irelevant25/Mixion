@@ -42,6 +42,8 @@ export class SessionService {
       this.currentPreset.set(body.currentPreset ?? null);
       this.inputSlots .set(body.inputSlots  ?? []);
       this.outputSlots.set(body.outputSlots ?? []);
+      // A later successful read (reconnect, sessionChanged) recovers from an earlier failure.
+      this.error.set(null);
     } catch (err) {
       this.error.set(err);
       throw err;

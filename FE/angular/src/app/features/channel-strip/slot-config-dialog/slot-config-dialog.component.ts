@@ -25,9 +25,10 @@ import { DeviceIconComponent } from '../device-icon/device-icon.component';
  * placeholder letter they'll fill in later, or wants to free up the
  * device for another slot.
  *
- * Refresh button (top of the dialog) re-enumerates devices on the BE so
- * apps that started after the host launched (or new physical devices)
- * appear in the picker without restarting the host.
+ * The host attaches devices and apps on its own and pushes the updated
+ * channel list (`stateChanged`), so the picker stays current by itself.
+ * The footer's Rescan is the last resort: it rebuilds the engine and
+ * rescans everything, with a brief audio dropout.
  *
  * Devices the BE no longer has a working source for are rendered with
  * red text and a "(no longer available)" annotation — but only if they
@@ -157,10 +158,10 @@ export class SlotConfigDialogComponent {
   }
 
   /**
-   * Tell the BE to re-enumerate physical devices and audio-producing
-   * processes, then hydrate our store with the new state. Briefly the
-   * BE engine is torn down and rebuilt — controls in flight will fail,
-   * but for an interactive refresh that's an acceptable trade.
+   * Last-resort rescan: tell the BE to re-enumerate physical devices and
+   * audio-producing processes, then hydrate our store with the new state.
+   * Briefly the BE engine is torn down and rebuilt — controls in flight will
+   * fail, but for an explicit rescan that's an acceptable trade.
    */
   protected async onRefresh(): Promise<void> {
     if (this.refreshing()) return;
@@ -177,9 +178,9 @@ export class SlotConfigDialogComponent {
   }
 
   private formatError(err: unknown): string {
-    if (err instanceof IpcError) return `Refresh failed: ${err.message} (code ${err.code})`;
-    if (err instanceof Error)    return `Refresh failed: ${err.message}`;
-    return 'Refresh failed';
+    if (err instanceof IpcError) return `Request failed: ${err.message} (code ${err.code})`;
+    if (err instanceof Error)    return `Request failed: ${err.message}`;
+    return 'Request failed';
   }
 
   open(): void  { this.dlg().nativeElement.showModal(); }

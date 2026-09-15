@@ -122,6 +122,46 @@ export class MixerStateStore {
   }
 
   /**
+   * Merge a host-pushed `stateChanged` snapshot. The host pushes one when the
+   * channel set or availability changes on its own — an app restarted, a
+   * device was plugged in — so it is authoritative for which channels exist,
+   * their order, names and availability. Gain, mute, solo, pan, DSP and routes
+   * of channels this tab already knows are kept: they only change through
+   * this tab's own RPCs, and a push can race one that is still in flight.
+   */
+  applyTopology(next: MixerStateDto): void {
+    const incoming = this.normalise(next);
+    const cur = this._state();
+    if (!cur) {
+      this._state.set(incoming);
+      return;
+    }
+
+    const mergeBus = (local: ChannelDto[], remote: ChannelDto[]): ChannelDto[] => {
+      const byId = new Map(local.map((c) => [c.id, c] as const));
+      return remote.map((r) => {
+        const known = byId.get(r.id);
+        return known ? { ...known, name: r.name, available: r.available } : r;
+      });
+    };
+
+    const inputs  = mergeBus(cur.inputs,  incoming.inputs);
+    const outputs = mergeBus(cur.outputs, incoming.outputs);
+
+    const localInput  = new Map(cur.inputs.map((c, i) => [c.id, i] as const));
+    const localOutput = new Map(cur.outputs.map((c, o) => [c.id, o] as const));
+    const matrix = incoming.matrix.map((row, i) =>
+      row.map((routed, o) => {
+        const li = localInput.get(inputs[i]?.id ?? '');
+        const lo = localOutput.get(outputs[o]?.id ?? '');
+        return li !== undefined && lo !== undefined ? (cur.matrix[li]?.[lo] ?? routed) : routed;
+      }),
+    );
+
+    this._state.set({ inputs, outputs, matrix });
+  }
+
+  /**
    * Local matrix mutation. Used for optimistic updates and for rollback when
    * the corresponding RPC fails.
    */

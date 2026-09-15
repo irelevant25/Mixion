@@ -2,20 +2,13 @@
     <dialog #dlg (close)="onNativeClose()" class="slot-dlg">
       <header>
         <h2>{{ headingText() }}</h2>
-        <span class="header-actions">
-          <button
-            type="button"
-            class="refresh"
-            (click)="onRefresh()"
-            [disabled]="refreshing()"
-            [attr.aria-label]="'Refresh ' + bus() + ' device list'">
-            {{ refreshing() ? 'Refreshing…' : 'Refresh' }}
-          </button>
-          <button type="button" class="x" aria-label="Close" (click)="close()">×</button>
-        </span>
+        <button type="button" class="x" aria-label="Close" (click)="close()">×</button>
       </header>
 
-      <p class="hint">Pick the device this slot should drive, or leave it unassigned.</p>
+      <p class="hint">
+        Pick the device this slot should drive, or leave it unassigned. Devices and apps
+        show up here on their own as soon as Windows reports them.
+      </p>
 
       @if (refreshError()) {
         <p class="err" role="alert">{{ refreshError() }}</p>
@@ -70,6 +63,15 @@
       </ul>
 
       <footer>
+        <button
+          type="button"
+          class="rescan"
+          (click)="onRefresh()"
+          [disabled]="refreshing()"
+          title="Last resort — this list updates by itself. Rescanning re-opens every device and app, with a brief audio dropout."
+          [attr.aria-label]="'Rescan all ' + bus() + ' devices and apps'">
+          {{ refreshing() ? 'Rescanning…' : 'Something missing? Rescan' }}
+        </button>
         <span class="actions">
           <button type="button" class="danger" (click)="onRemove()">Remove slot</button>
         </span>

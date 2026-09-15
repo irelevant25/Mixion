@@ -29,13 +29,13 @@ When the user double-clicks `Mixion.exe`:
    > *VB-CABLE driver not detected. Mixion requires VB-CABLE to provide virtual audio endpoints. Install it from https://vb-audio.com/Cable/ and relaunch the app.*
    The user clicks OK, the process exits cleanly. No web server starts, no audio engine starts.
 2. **Found** — the host:
-   - Binds Kestrel to `127.0.0.1:<random free port>`.
+   - Binds Kestrel to `127.0.0.1`, reusing the previous run's port when it's free (otherwise a random free port).
    - Starts the audio engine.
    - Logs the URL to its console window (e.g., `http://127.0.0.1:54812/`).
    - Opens the user's default browser at that URL (unless `--no-browser`).
-   - Stays running until the user closes the console window or hits Ctrl-C.
+   - Stays running in the system tray until the user picks **Exit** (or logs off).
 
-The browser tab is the entire UI — close it to disconnect, reopen the URL to reconnect. The audio engine keeps running while the host process is alive.
+The browser tab is the entire UI — close it to disconnect, reopen the URL (or tray → UI) to reconnect. The audio engine keeps running while the host process is alive. When Mixion exits, the tab closes itself, and the next launch opens one fresh tab on the same port.
 
 ## Reproducing a build
 

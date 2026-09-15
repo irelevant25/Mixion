@@ -171,17 +171,19 @@ This happens entirely inside the .exe. There is no separate launcher. Whether th
 | Per-channel gain (dB) | ✅ | Log-scale slider |
 | Per-channel mute | ✅ | |
 | Per-channel solo | ✅ | Soloing any channel mutes non-soloed channels in same bus |
-| Real-time peak + RMS VU meters | ✅ | 30 Hz telemetry, 60 fps canvas redraw |
+| Stereo signal path | ✅ | Every input and output is stereo end to end; mono sources feed both sides; pan acts as balance; gate and compressor are stereo-linked |
+| Real-time peak + RMS VU meters | ✅ | Separate L/R meters; 30 Hz telemetry, 60 fps canvas redraw |
 | Per-channel DSP — gate, parametric EQ, compressor, pan | ✅ | Independently bypassable; canvas-based EQ curve with draggable bands |
-| Per-process loopback capture (Chrome / Spotify / OBS / games) | ✅ | Win10 20348+/Win11; auto-rebinds on process restart by name |
-| Runtime device refresh | ✅ | `refreshDevices` RPC re-enumerates devices + audio processes without a host restart |
-| Save/load JSON presets | ✅ | Re-resolves devices by friendly name on load; DSP state and slot layout round-trip |
+| Per-process loopback capture (Chrome / Spotify / OBS / games) | ✅ | Win10 20348+/Win11; an app is one channel by name — close and reopen it and it re-attaches on its own |
+| Automatic device & app tracking | ✅ | Devices and apps attach, detach and re-attach by themselves without interrupting other channels; the slot picker's Rescan is a last resort |
+| Save/load JSON presets | ✅ | Re-resolves devices by id, then friendly name; DSP state and slot layout round-trip; slots bound to an app or device that isn't present stay bound and reconnect when it appears |
 | Preset metadata (created / edited timestamps, rename) | ✅ | List view sorts by edited desc; "current preset" pointer auto-loaded on next host start |
-| Auto-open default browser on launch | ✅ | `--no-browser` flag to disable |
-| ASIO support | ❌ | Future v1.x |
-| MIDI control | ❌ | Future v1.x |
-| Sample-rate conversion across mismatched devices | ❌ | v1 detects mismatch and refuses to start with a clear error |
-| System tray icon | ❌ | Future v1.x — for now, the host runs in a console window |
+| Auto-open default browser on launch | ✅ | `--no-browser` flag to disable; the host reuses its previous port |
+| One browser tab | ✅ | The tab closes itself when Mixion exits; a newer Mixion tab retires older ones |
+| ASIO support | ❌ |  |
+| MIDI control | ❌ |  |
+| Sample-rate conversion across mismatched devices | ❌ | Devices at a different sample rate than the default output are left out |
+| System tray icon | ✅ | Console, UI, Run on startup, Exit |
 | Own virtual audio driver | ❌ | Rejected (EV cert cost) |
 
 ---
@@ -215,8 +217,9 @@ Each milestone is independently shippable to yourself. **Detailed tasks** for ea
 - **Angular bundle goes inside the assembly.** `ManifestEmbeddedFileProvider` keeps the .exe truly portable. `dotnet publish` settings: `<GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>` and `<EmbeddedResource Include="wwwroot\**\*" />`.
 - **Sample-rate mismatch is the #1 WASAPI bug source.** Detect on start; refuse with a clear error rather than silently glitching. Channels with no live device (unplugged mic, dead process loopback) survive in `MixerState` with `Available = false` and contribute silence — they don't take down the engine.
 - **Solo logic gotcha:** soloing any channel forces all non-soloed channels in the same bus to be muted. Easy to get backwards. Unit test it.
-- **Device GUIDs aren't stable across reboots.** Resolve presets by endpoint friendly name + interface name; warn on missing device. Process loopbacks use `process:<name>` (PID-free) so a Chrome restart re-attaches to the same channel.
-- **Engine rebuilds funnel through one place.** `EngineHost.RebuildAsync` serialises every teardown/rebuild path (Refresh, `removeProcessLoopback`, the process-health watchdog) so two rebuilds can't race for the same WASAPI endpoints. Expect a ~200 ms audible gap during each rebuild — acceptable for explicit user actions; BE-110 is the future "true atomic swap" that eliminates it.
+- **Device GUIDs aren't stable across reboots.** Resolve presets by endpoint id, then friendly name + interface name; warn on missing device. Process loopbacks use `process:<name>` (PID-free) and capture the app's whole process tree, so a Chrome restart re-attaches to the same channel.
+- **Topology changes funnel through one place.** `EngineHost` serialises full rebuilds (Rescan, audio-settings changes, `removeProcessLoopback` — ~200 ms audible gap) and the in-place changes the device watcher makes (spare engine slots, no gap), so two changes never race for the same WASAPI endpoints.
+- **One source must never stall the mix.** A capture that stops delivering is mixed as silence after ~50 ms and the backlog the other channels built up meanwhile is dropped, so a closed app or an unplugged device costs a brief dropout — it can't take the other channels down or leave extra latency behind.
 - **Driver probe is intentionally narrow.** Only the basic single-cable VB-CABLE satisfies it (see [Driver presence check](#driver-presence-check-runtime)). Don't loosen the matcher to "any VB-Audio device" — the routing UX depends on having exactly one canonical *CABLE Input* / *CABLE Output* pair.
 
 ---

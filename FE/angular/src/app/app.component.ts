@@ -3,7 +3,9 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { ConnectionBannerComponent } from './shell/connection-banner/connection-banner.component';
 import { ErrorPageComponent } from './shell/error-page/error-page.component';
+import { TabClosedComponent } from './shell/tab-closed/tab-closed.component';
 import { CurrentPresetService } from './core/current-preset.service';
+import { HostLifecycleService } from './core/host-lifecycle.service';
 import { IpcError, IpcService } from './core/ipc.service';
 import { MixerStateStore } from './core/mixer-state.store';
 import { PresetActionsService } from './core/preset-actions.service';
@@ -24,6 +26,7 @@ interface Health {
     RouterLinkActive,
     ConnectionBannerComponent,
     ErrorPageComponent,
+    TabClosedComponent,
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css'],
@@ -32,6 +35,7 @@ export class AppComponent {
   protected readonly session = inject(SessionService);
   protected readonly ipc     = inject(IpcService);
   protected readonly store   = inject(MixerStateStore);
+  protected readonly lifecycle = inject(HostLifecycleService);
   private   readonly preset  = inject(CurrentPresetService);
   private   readonly actions = inject(PresetActionsService);
 

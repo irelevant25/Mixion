@@ -1,4 +1,8 @@
-@if (session.error()) {
+@if (lifecycle.retired(); as reason) {
+  <app-tab-closed
+    [reason]="reason"
+    (resume)="lifecycle.resume()" />
+} @else if (session.error()) {
   <app-error-page
     [detail]="errorDetail()"
     (retry)="retry()" />
@@ -8,11 +12,13 @@
       <img src="logo.png" alt="" width="28" height="28" class="logo" aria-hidden="true" />
       <span>Mixion</span>
     </h1>
+    <!-- replaceUrl keeps the tab at a single history entry, which browsers
+         require before they let the app close its own tab on host exit. -->
     <nav>
-      <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Mixer</a>
-      <a routerLink="/presets" routerLinkActive="active">Presets</a>
-      <a routerLink="/signal-flow" routerLinkActive="active">Signal flow</a>
-      <a routerLink="/audio-settings" routerLinkActive="active">Audio settings</a>
+      <a routerLink="/" replaceUrl routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Mixer</a>
+      <a routerLink="/presets" replaceUrl routerLinkActive="active">Presets</a>
+      <a routerLink="/signal-flow" replaceUrl routerLinkActive="active">Signal flow</a>
+      <a routerLink="/audio-settings" replaceUrl routerLinkActive="active">Audio settings</a>
     </nav>
     <app-connection-banner />
   </header>

@@ -12,22 +12,53 @@ import { IpcService } from './core/ipc.service';
 import { MixerStateDto, MixerStateStore } from './core/mixer-state.store';
 import { SlotsStore } from './core/slots.store';
 import { CurrentPresetService } from './core/current-preset.service';
+import { CLOSE_TAB_ON_HOST_EXIT, HostLifecycleService } from './core/host-lifecycle.service';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideZoneChangeDetection({ eventCoalescing: true }),
     provideRouter(routes),
     provideAppInitializer(async () => {
-      const session = inject(SessionService);
-      const ipc     = inject(IpcService);
-      const store   = inject(MixerStateStore);
-      const slots   = inject(SlotsStore);
-      const current = inject(CurrentPresetService);
+      const session   = inject(SessionService);
+      const ipc       = inject(IpcService);
+      const store     = inject(MixerStateStore);
+      const slots     = inject(SlotsStore);
+      const current   = inject(CurrentPresetService);
+      const lifecycle = inject(HostLifecycleService);
+      const closeTabOnHostExit = inject(CLOSE_TAB_ON_HOST_EXIT);
+
+      // Re-read the whole session from the host — mixer state, the slot layout
+      // of the preset it applied, and that preset's name. Returns the token.
+      const rehydrate = async (): Promise<string | null> => {
+        await session.init();
+        const init = session.state();
+        if (init) store.replace(init);
+        const inSlots  = session.inputSlots();
+        const outSlots = session.outputSlots();
+        if (inSlots.length > 0 || outSlots.length > 0) {
+          slots.replace(toIds(inSlots), toIds(outSlots));
+        }
+        current.set(session.currentPreset());
+        return session.token();
+      };
+
+      // The host pushes `stateChanged` whenever devices or apps come and go
+      // (an app restarted, a headset plugged in), so the picker and strips
+      // follow along without anyone pressing Refresh. `sessionChanged` means
+      // it applied a preset after this page loaded (its audio engine started
+      // late), so take the host's whole session, not just the topology.
+      ipc.notifications$.subscribe((n) => {
+        if (n.method === 'stateChanged' && n.params) store.applyTopology(n.params as MixerStateDto);
+        if (n.method === 'sessionChanged') rehydrate().catch(() => {});
+      });
 
       try {
         await session.init();
         const init = session.state();
         if (init) store.hydrate(init);
+
+        // This tab is now the live UI; older Mixion tabs in this browser retire.
+        lifecycle.claim();
 
         // Restore the slot layout the host applied when it auto-loaded the
         // last preset. Without this, channels would have their saved gain /
@@ -47,45 +78,36 @@ export const appConfig: ApplicationConfig = {
           // Auto-reconnect (FE-060): on every WS drop, the IpcService waits
           // 1 / 2 / 4 / 8 / 16 / 30 s, re-fetches /api/session for a fresh
           // token (host restarts mint new tokens), reconnects, then runs
-          // onReconnected — getState() + store.replace() so the UI is in
-          // sync with the post-restart engine. Telemetry / spectrum
-          // re-subscription is handled inside connect() itself.
+          // onReconnected — rehydrate() again, so the UI is in sync with the
+          // post-restart engine and nothing pushed meanwhile is missed. Telemetry / spectrum
+          // re-subscription is handled inside connect() itself. When the
+          // host announces it is exiting, the packaged app stops here and
+          // closes the tab (HostLifecycleService); `ng serve` keeps trying.
           ipc.enableAutoReconnect({
             tokenProvider: async () => {
-              await session.init();
-              const fresh = session.token();
+              const fresh = await rehydrate();
               if (!fresh) throw new Error('Session refresh did not yield a token.');
-              const init = session.state();
-              if (init) store.replace(init);
-              const inSlots  = session.inputSlots();
-              const outSlots = session.outputSlots();
-              if (inSlots.length > 0 || outSlots.length > 0) {
-                slots.replace(toIds(inSlots), toIds(outSlots));
-              }
-              current.set(session.currentPreset());
               return fresh;
             },
             onReconnected: async () => {
               try {
-                const state = await ipc.call<MixerStateDto>('getState');
-                store.replace(state);
+                await rehydrate();
               } catch {
-                /* getState() failure is non-fatal — banner already reflects status */
+                /* a failed re-read is non-fatal — banner already reflects status */
               }
             },
+            resumeAfterHostExit: !closeTabOnHostExit,
           });
 
           // Don't block first paint on the WS handshake — kick it off and
-          // re-sync state once the socket is open. /api/session can race the
-          // engine start (the host serves /api before audio is ready), so the
-          // initial mixerStateInit may be empty; getState() over the WS gives
-          // us the authoritative snapshot.
+          // re-read the session once the socket is open. A push that happened
+          // between the first /api/session and this socket joining the host's
+          // broadcasts (a late preset load's sessionChanged) is picked up here.
           void ipc
             .connect(token)
             .then(async () => {
               try {
-                const state = await ipc.call<MixerStateDto>('getState');
-                store.replace(state);
+                await rehydrate();
               } catch {
                 /* host not ready / closed during call — banner reflects status */
               }

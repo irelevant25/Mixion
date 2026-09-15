@@ -8,7 +8,7 @@
         <app-device-icon class="device-icon" [bus]="bus()" [channelId]="device()?.id ?? null" />
         <span class="name" [title]="displayName()">{{ displayName() }}</span>
         @if (unavailable()) {
-            <span class="missing-tag" title="Device no longer reported by the host. Refresh from the slot picker to retry.">×</span>
+            <span class="missing-tag" title="Not available right now — reconnects automatically when the device or app is back.">×</span>
         }
     </button>
 

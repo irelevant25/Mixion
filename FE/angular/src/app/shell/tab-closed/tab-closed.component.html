@@ -1,0 +1,14 @@
+<section class="wrap">
+  @if (reason() === 'host-exited') {
+    <h1>Mixion has exited</h1>
+    <p>
+      The Mixion host was closed, so this tab is no longer connected. You can
+      close it — starting Mixion again opens a fresh tab.
+    </p>
+    <button type="button" (click)="resume.emit()">Reconnect</button>
+  } @else {
+    <h1>Mixion is open in another tab</h1>
+    <p>Only one tab controls the mixer at a time; this one stepped aside when a newer tab opened.</p>
+    <button type="button" (click)="resume.emit()">Use this tab instead</button>
+  }
+</section>

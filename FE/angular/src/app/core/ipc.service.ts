@@ -17,12 +17,30 @@ interface PendingCall {
   method: string;
 }
 
-interface JsonRpcResponse {
+/**
+ * Any text frame from the host: a response to one of our calls (numeric `id`)
+ * or a server-initiated notification (`method`, no `id`).
+ */
+interface JsonRpcMessage {
   jsonrpc: '2.0';
-  id: number | string | null;
+  id?: number | string | null;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
+  method?: string;
+  params?: unknown;
 }
+
+/** Server → client JSON-RPC notification. */
+export interface RpcNotification {
+  method: string;
+  params?: unknown;
+}
+
+/**
+ * Close description the host sends with status 1001 (Going Away) when it
+ * exits. Mirrors `WebSocketEndpoint.ShutdownCloseReason` on the BE.
+ */
+const HOST_SHUTDOWN_CLOSE_REASON = 'host-shutdown';
 
 const DEFAULT_TIMEOUT_MS = 5000;
 
@@ -77,11 +95,13 @@ const BINARY_FRAME_SPECTRUM = 0x53; // 'S'
 /**
  * Browser-side WebSocket client. Exposes:
  *
- * - `status` signal — observable connection state for the UI banner.
- * - `call<T>()`     — JSON-RPC 2.0 request with id correlation + timeout.
- * - `notify()`      — fire-and-forget notification (no id, no response).
- * - `telemetry$`    — hot stream of decoded VU-meter pair buffers (M5).
- * - `meters`        — live snapshot for high-frequency RAF readers.
+ * - `status` signal     — observable connection state for the UI banner.
+ * - `hostExited` signal — the host announced it is shutting down.
+ * - `call<T>()`         — JSON-RPC 2.0 request with id correlation + timeout.
+ * - `notify()`          — fire-and-forget notification (no id, no response).
+ * - `notifications$`    — server-initiated notifications (e.g. `stateChanged`).
+ * - `telemetry$`        — hot stream of decoded VU-meter pair buffers (M5).
+ * - `meters`            — live snapshot for high-frequency RAF readers.
  *
  * The token is held by the caller (SessionService); we never persist it.
  */
@@ -89,6 +109,13 @@ const BINARY_FRAME_SPECTRUM = 0x53; // 'S'
 export class IpcService {
   readonly status = signal<IpcStatus>('idle');
   readonly telemetry$ = new Subject<Float32Array>();
+  readonly notifications$ = new Subject<RpcNotification>();
+
+  /**
+   * True once the host said it is exiting — a `hostShutdown` notification or
+   * a 1001 `host-shutdown` close. Cleared when a connection succeeds again.
+   */
+  readonly hostExited = signal(false);
 
   /**
    * Mutable single-buffer snapshot updated on every binary frame. Readers
@@ -147,6 +174,7 @@ export class IpcService {
   private reconnect: {
     tokenProvider: () => Promise<string>;
     onReconnected:  () => Promise<void> | void;
+    resumeAfterHostExit: boolean;
   } | null = null;
   /** Backoff schedule in milliseconds — capped at 30 s indefinitely (FE-060). */
   private static readonly ReconnectDelaysMs = [1000, 2000, 4000, 8000, 16000, 30000];
@@ -176,6 +204,7 @@ export class IpcService {
     return new Promise<void>((resolve, reject) => {
       const onOpen = () => {
         this.status.set('connected');
+        this.hostExited.set(false);
         cleanup();
         // If a previous session had telemetry on, resume it now (only when
         // the tab is visible — visibility listener handles the rest).
@@ -200,7 +229,10 @@ export class IpcService {
       socket.addEventListener('open', onOpen);
       socket.addEventListener('error', onError);
 
-      socket.addEventListener('close', () => {
+      socket.addEventListener('close', (ev: CloseEvent) => {
+        if (ev.code === 1001 && ev.reason === HOST_SHUTDOWN_CLOSE_REASON) {
+          this.hostExited.set(true);
+        }
         this.status.set('disconnected');
         // Reject every in-flight call so callers don't hang forever.
         for (const [id, p] of this.pending) {
@@ -237,12 +269,21 @@ export class IpcService {
    * The `onReconnected` hook fires after the WS is back up — typical use is
    * to call `getState()` and replace the mixer store so the UI is in sync
    * with whatever the new host knows.
+   *
+   * `resumeAfterHostExit` keeps retrying after the host announced it is
+   * exiting. Development under `ng serve` wants that (the host restarts all
+   * the time); the packaged app closes its tab instead.
    */
   enableAutoReconnect(opts: {
     tokenProvider: () => Promise<string>;
     onReconnected: () => Promise<void> | void;
+    resumeAfterHostExit?: boolean;
   }): void {
-    this.reconnect = opts;
+    this.reconnect = {
+      tokenProvider: opts.tokenProvider,
+      onReconnected: opts.onReconnected,
+      resumeAfterHostExit: opts.resumeAfterHostExit ?? false,
+    };
   }
 
   private scheduleReconnectIfNeeded(): void {
@@ -251,6 +292,7 @@ export class IpcService {
       return;
     }
     if (!this.reconnect) return;
+    if (this.hostExited() && !this.reconnect.resumeAfterHostExit) return;
     if (this.reconnectTimer !== null || this.reconnectInFlight) return;
 
     const delays = IpcService.ReconnectDelaysMs;
@@ -469,15 +511,18 @@ export class IpcService {
   }
 
   private handleText(text: string): void {
-    let msg: JsonRpcResponse;
+    let msg: JsonRpcMessage;
     try {
-      msg = JSON.parse(text) as JsonRpcResponse;
+      msg = JSON.parse(text) as JsonRpcMessage;
     } catch {
       return;
     }
 
-    // Server-initiated frames (no matching id) are not used in M3; ignore.
-    if (typeof msg.id !== 'number') return;
+    if (typeof msg.id !== 'number') {
+      if (typeof msg.method === 'string') this.handleNotification({ method: msg.method, params: msg.params });
+      return;
+    }
+
     const pending = this.pending.get(msg.id);
     if (!pending) return;
     this.pending.delete(msg.id);
@@ -488,6 +533,11 @@ export class IpcService {
     } else {
       pending.resolve(msg.result);
     }
+  }
+
+  private handleNotification(notification: RpcNotification): void {
+    if (notification.method === 'hostShutdown') this.hostExited.set(true);
+    this.notifications$.next(notification);
   }
 
   private sendSubscribe(): void {
