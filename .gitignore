@@ -1,5 +1,10 @@
-BE/*/bin/*
-BE/*/obj/*
+# ---- Build artifacts ---------------------------------------------------------
+
+# .NET build output (host + tests).
+[Bb]in/
+[Oo]bj/
+TestResults/
+*.binlog
 
 # Angular build output staged into the host for embedding. Repopulated by
 # build.ps1 on every publish; the hashed filenames change every build, so
@@ -8,5 +13,37 @@ BE/*/obj/*
 # folder is empty, so an empty wwwroot is safe at HEAD.
 BE/Mixion.Host/wwwroot/
 
-# Single-file .exe produced by build.ps1.
-output/
+# build.ps1 output. Everything in output/ is generated; only its README is tracked.
+output/*
+!output/README.md
+
+# Binaries never belong in git — Mixion.exe is always rebuilt by build.ps1.
+*.exe
+*.dll
+*.pdb
+
+# ---- Node / Angular (FE/angular/.gitignore covers the rest of the workspace) --
+node_modules/
+
+# ---- IDEs and editors --------------------------------------------------------
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.DotSettings.user
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ---- Claude Code: shared skills/agents are tracked, personal settings are not --
+.claude/settings.local.json
+
+# ---- OS noise, logs, dumps ---------------------------------------------------
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+*.dmp
