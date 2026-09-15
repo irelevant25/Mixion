@@ -1,0 +1,169 @@
+# Builds Mixion.exe and publishes it as a GitHub release.
+#
+# Start it by pushing a version tag:
+#   git tag v1.2.0
+#   git push irelevant25 v1.2.0
+# or on GitHub: Actions → Release → Run workflow, entering the version (the tag
+# is created on the branch the workflow runs from).
+#
+# Versions with a suffix (1.3.0-beta.1) are published as prereleases. The notes
+# are the version's section of CHANGELOG.md, then the commits since the previous
+# v* tag. Re-running it for a release that exists refreshes its notes and exe.
+# See .claude/skills/mixion-release/SKILL.md.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without the v, e.g. 1.2.0 or 1.3.0-beta.1'
+        required: true
+        type: string
+      draft:
+        description: 'Create the release as a draft'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, test and publish
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      NG_CLI_ANALYTICS: 'false'
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history and tags, for the release notes
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = if ($env:EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_VERSION.Trim().TrimStart('v') } else { $env:REF_NAME.Substring(1) }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw "'$version' is not a release version. Use X.Y.Z or X.Y.Z-suffix, e.g. 1.2.0 or 1.3.0-beta.1."
+          }
+          $prerelease = if ($version.Contains('-')) { 'true' } else { 'false' }
+          "version=$version"       >> $env:GITHUB_OUTPUT
+          "tag=v$version"          >> $env:GITHUB_OUTPUT
+          "prerelease=$prerelease" >> $env:GITHUB_OUTPUT
+          "Releasing v$version (prerelease: $prerelease)"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: FE/angular/package-lock.json
+
+      - name: Build Mixion.exe
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./build.ps1 -Mode portable -Version $env:VERSION
+
+      - name: Test backend
+        shell: pwsh
+        # GitHub's runners have no audio devices, so tests that need them are skipped.
+        run: dotnet test BE/Mixion.Host.Tests/Mixion.Host.Tests.csproj --filter "Requires!=AudioDevices"
+
+      - name: Test frontend
+        shell: pwsh
+        working-directory: FE/angular
+        run: npx ng test --watch=false --browsers=ChromeHeadless
+
+      - name: Write release notes
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          [Console]::OutputEncoding = [Text.Encoding]::UTF8
+          $sections = [Collections.Generic.List[string]]::new()
+
+          # The version's section of CHANGELOG.md, if it has one.
+          $changelog = if (Test-Path CHANGELOG.md) { Get-Content CHANGELOG.md -Raw -Encoding utf8 } else { '' }
+          $pattern   = '(?ms)^## \[' + [regex]::Escape($env:VERSION) + '\][^\r\n]*\r?\n(.*?)(?=^## \[|\z)'
+          $match     = [regex]::Match($changelog, $pattern)
+          if ($match.Success -and $match.Groups[1].Value.Trim()) {
+            $sections.Add($match.Groups[1].Value.Trim())
+          } else {
+            "::warning title=CHANGELOG.md::No '## [$env:VERSION]' section found; the release notes list commits only."
+          }
+
+          # Commits since the previous release tag (every commit for the first release).
+          $previous = git describe --tags --abbrev=0 --match 'v*' 'HEAD^' 2>$null
+          if ($LASTEXITCODE -ne 0) { $previous = $null }
+          $range   = if ($previous) { "$previous..HEAD" } else { 'HEAD' }
+          $commits = @(git log --no-merges --pretty=format:'- %s (%h)' $range)
+          if ($LASTEXITCODE -ne 0) { throw 'git log failed.' }
+          if ($commits.Count -gt 0) { $sections.Add("### Commits`n`n" + ($commits -join "`n")) }
+          if ($previous) { $sections.Add("**Full changelog:** $env:REPO_URL/compare/$previous...$env:TAG") }
+
+          $hash = (Get-FileHash output/Mixion.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $download = @'
+          ### Download
+
+          `Mixion.exe` is a single portable file: no installer, no .NET install needed. Mixion needs the basic [VB-CABLE](https://vb-audio.com/Cable/) driver; capturing individual apps needs Windows 11 or Windows 10 build 20348+.
+
+          SHA-256 of `Mixion.exe`: `{0}`
+          '@ -f $hash
+          $sections.Add($download)
+
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -Path $notes -Value ($sections -join "`n`n") -Encoding utf8
+          Get-Content $notes -Encoding utf8
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+
+          gh release view $env:TAG --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) {
+            # A re-run for a release that already exists: refresh the notes, replace the exe.
+            gh release edit $env:TAG --notes-file $notes
+            if ($LASTEXITCODE -ne 0) { throw 'gh release edit failed.' }
+            gh release upload $env:TAG output/Mixion.exe --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'gh release upload failed.' }
+          } else {
+            $arguments = @('release', 'create', $env:TAG, 'output/Mixion.exe',
+                           '--title', "Mixion $env:TAG",
+                           '--notes-file', $notes,
+                           '--target', $env:GITHUB_SHA)
+            if ($env:PRERELEASE -eq 'true') { $arguments += '--prerelease' }
+            if ($env:DRAFT -eq 'true')      { $arguments += '--draft' }
+            gh @arguments
+            if ($LASTEXITCODE -ne 0) { throw 'gh release create failed.' }
+          }

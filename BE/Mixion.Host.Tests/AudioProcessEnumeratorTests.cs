@@ -9,8 +9,10 @@ namespace Mixion.Host.Tests;
 /// <see cref="AudioProcessEnumerator"/> drives the Core Audio session COM
 /// interfaces directly. This compares it with NAudio's session API on the
 /// machine running the tests — a wrong vtable layout would read the wrong
-/// method and the two views would disagree.
+/// method and the two views would disagree. It needs the machine's audio
+/// stack, so the release workflow (runners without audio devices) skips it.
 /// </summary>
+[Trait("Requires", "AudioDevices")]
 public class AudioProcessEnumeratorTests
 {
     [Fact]

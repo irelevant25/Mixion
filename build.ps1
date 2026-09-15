@@ -24,9 +24,18 @@
 .PARAMETER Configuration
   .NET build configuration. Release (default) or Debug.
 
+.PARAMETER Version
+  Version to stamp into Mixion.exe (file, product and assembly version), e.g.
+  1.2.0 or 1.3.0-beta.1. Local builds can leave it out; the release workflow
+  passes the version from the tag.
+
 .EXAMPLE
   .\build.ps1
   Self-contained portable Mixion.exe in ./output.
+
+.EXAMPLE
+  .\build.ps1 -Version 1.2.0
+  The same, stamped as version 1.2.0 — what the release workflow runs.
 
 .EXAMPLE
   .\build.ps1 -Mode minimal -Clean
@@ -41,7 +50,10 @@ param(
     [switch]$Clean,
 
     [ValidateSet('Release', 'Debug')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+
+    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$')]
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,10 +143,15 @@ Write-Host "    Embedded UI bundle: $bundleSize MB"
 # -----------------------------------------------------------------------------
 # 5. Publish .NET host
 # -----------------------------------------------------------------------------
-Step "Publishing .NET host (mode: $Mode, configuration: $Configuration)"
+$versionLabel = if ($Version) { ", version $Version" } else { '' }
+Step "Publishing .NET host (mode: $Mode, configuration: $Configuration$versionLabel)"
 if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
 
 $selfContained = if ($Mode -eq 'portable') { 'true' } else { 'false' }
+
+# -p:Version sets the file, product and assembly versions together.
+$versionArgs = @()
+if ($Version) { $versionArgs += "-p:Version=$Version" }
 
 & dotnet publish $bePath `
     -c $Configuration `
@@ -144,7 +161,8 @@ $selfContained = if ($Mode -eq 'portable') { 'true' } else { 'false' }
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:DebugType=embedded `
     -p:EnableCompressionInSingleFile=true `
-    -o $publishDir
+    -o $publishDir `
+    @versionArgs
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 
 $producedExe = Join-Path $publishDir 'Mixion.exe'
@@ -167,7 +185,7 @@ Remove-Item $publishDir -Recurse -Force -ErrorAction SilentlyContinue
 $exeSize = [math]::Round((Get-Item $finalExe).Length / 1MB, 1)
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
-Write-Host "    $finalExe ($exeSize MB, $Mode)"
+Write-Host "    $finalExe ($exeSize MB, $Mode$versionLabel)"
 Write-Host ""
 Write-Host "Run it:  $finalExe"
-Write-Host "         (it will probe for VB-CABLE, pick a free port, and open your browser)"
+Write-Host "         (it will probe for VB-CABLE, reuse its last port or pick a free one, and open your browser)"

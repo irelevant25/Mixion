@@ -61,7 +61,9 @@ Single-process model. The .NET 8 host runs the audio engine, an HTTP server (Kes
 ```
 Mixion\
 ├── README.md                       # this file
-├── build.ps1                       # one-shot build script (-Mode portable | minimal)
+├── CHANGELOG.md                    # user-facing changes per release (feeds the GitHub release notes)
+├── .github\workflows\release.yml   # tag v* → build, test, publish a GitHub release with Mixion.exe
+├── build.ps1                       # one-shot build script (-Mode portable | minimal, -Version)
 ├── icon.png / icon - no bg.png     # source artwork for the app icon
 ├── BE\
 │   ├── README.md                   # backend tasks (.NET host)
@@ -147,6 +149,17 @@ The script:
 
 The Angular files travel inside the assembly as embedded resources (via `ManifestEmbeddedFileProvider`), so `output/Mixion.exe` is genuinely a single file with no companion `wwwroot/` folder.
 
+### Releases
+
+GitHub builds releases with [.github/workflows/release.yml](.github/workflows/release.yml). Pushing a version tag starts it:
+
+```powershell
+git tag v1.0.0
+git push irelevant25 v1.0.0
+```
+
+It can also be started from GitHub (**Actions → Release → Run workflow**, entering the version). The workflow runs `build.ps1 -Version <version>` and the backend and frontend tests, then creates the GitHub release with `Mixion.exe` attached. The release notes are that version's section of [CHANGELOG.md](CHANGELOG.md), followed by the commits since the previous tag. Versions with a suffix (`1.1.0-beta.1`) are marked as prereleases.
+
 ---
 
 ## Driver presence check (runtime)
@@ -226,4 +239,4 @@ Each milestone is independently shippable to yourself. **Detailed tasks** for ea
 
 ## License & status
 
-Personal project. No public release planned.
+Personal project. Builds are published as [GitHub releases](https://github.com/irelevant25/Mixion/releases).
