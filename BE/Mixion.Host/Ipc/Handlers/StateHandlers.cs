@@ -20,11 +20,12 @@ public static class StateHandlers
 {
     public static void Register(JsonRpcDispatcher dispatcher, EngineHost host)
     {
-        dispatcher.Register("getState", (_, _, _) =>
+        dispatcher.Register("getState", async (_, _, ct) =>
         {
+            // The socket can open while the engine is still starting.
+            await host.WaitForStartupAsync(ct);
             var engine = host.Current;
-            var dto    = engine?.SnapshotState().ToDto() ?? StateDto.Empty;
-            return Task.FromResult<object?>(dto);
+            return engine?.SnapshotState().ToDto() ?? StateDto.Empty;
         });
 
         dispatcher.Register("resetMixerState", (_, _, _) =>
@@ -32,13 +33,11 @@ public static class StateHandlers
             var engine = host.Current
                 ?? throw new JsonRpcException(JsonRpcErrorCode.EngineUnavailable, "Audio engine not running.");
 
-            var current = engine.SnapshotState();
-            var next = new MixerState(
+            var next = engine.UpdateState(current => new MixerState(
                 Inputs:  ResetChannels(current.Inputs),
                 Outputs: ResetChannels(current.Outputs),
-                Matrix:  new RoutingMatrix(current.Inputs.Length, current.Outputs.Length));
+                Matrix:  new RoutingMatrix(current.Inputs.Length, current.Outputs.Length)));
 
-            engine.PublishState(next);
             return Task.FromResult<object?>(next.ToDto());
         });
     }

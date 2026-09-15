@@ -6,16 +6,18 @@ namespace Mixion.Host.Ipc.Handlers;
 /// <summary>
 /// <c>listPresets</c>, <c>savePreset</c>, <c>loadPreset</c>, <c>deletePreset</c>,
 /// <c>getCurrentPreset</c> — full preset lifecycle over JSON-RPC. State swaps
-/// happen via the same <see cref="MixEngine.PublishState"/> path the
-/// channel/route handlers use, so a preset load is observed by the audio
-/// thread on the next mix tick.
+/// go through <see cref="MixEngine.UpdateState"/> like every other control RPC,
+/// so a preset load is observed by the audio thread on the next mix tick.
 ///
 /// Slot layout (an FE concept) round-trips through the preset: the FE sends
 /// its current layout on save, and the load response carries the resolved
-/// slot device ids back so the FE can rebuild its strip rows. The host also
-/// caches the resolved layout in <see cref="CurrentPresetState"/> so the
-/// <c>/api/session</c> endpoint can hand it to a fresh page load without an
-/// extra RPC.
+/// slot device ids back so the FE can rebuild its strip rows. Slots persist
+/// their channel id, so a slot bound to an app keeps pointing at that app
+/// even when it isn't running at load time — the channel comes back as an
+/// unavailable placeholder and the device watcher attaches it once the app
+/// starts. The host also caches the resolved layout in
+/// <see cref="CurrentPresetState"/> so the <c>/api/session</c> endpoint can
+/// hand it to a fresh page load without an extra RPC.
 /// </summary>
 public static class PresetHandlers
 {
@@ -24,11 +26,10 @@ public static class PresetHandlers
     public sealed record RenamePresetParams(string OldName, string NewName);
 
     /// <summary>
-    /// FE-shaped slot in the savePreset request: just the live device id (or
+    /// FE-shaped slot in the savePreset request: just the live channel id (or
     /// null for an unassigned placeholder). The BE enriches each into a
-    /// <see cref="PresetSlot"/> by looking up the friendly + interface name
-    /// from the endpoint enumerator — that's the stable identity used for
-    /// re-resolution when the preset is loaded later.
+    /// <see cref="PresetSlot"/> with friendly + interface name for matching on
+    /// machines where the id differs.
     /// </summary>
     public sealed record SlotDeviceDto(string? DeviceId);
 
@@ -38,11 +39,14 @@ public static class PresetHandlers
         SlotDeviceDto[]? OutputSlots);
 
     public static void Register(
-        JsonRpcDispatcher dispatcher,
-        EngineHost host,
-        PresetStore store,
-        CurrentPresetState currentPreset,
-        IEndpointSource endpoints)
+        JsonRpcDispatcher   dispatcher,
+        EngineHost          host,
+        EngineFactory       factory,
+        PresetStore         store,
+        CurrentPresetState  currentPreset,
+        IEndpointSource     endpoints,
+        ProcessSuppressions suppressions,
+        AudioDeviceWatcher? watcher = null)
     {
         dispatcher.Register("listPresets", (_, _, _) =>
         {
@@ -75,11 +79,8 @@ public static class PresetHandlers
             var engine = RequireEngine(host);
             var state  = engine.SnapshotState();
 
-            var captureLookup = endpoints.Capture().ToDictionary(e => e.Id, StringComparer.Ordinal);
-            var renderLookup  = endpoints.Render() .ToDictionary(e => e.Id, StringComparer.Ordinal);
-
-            var inputSlots  = ToPresetSlots(p.InputSlots,  captureLookup);
-            var outputSlots = ToPresetSlots(p.OutputSlots, renderLookup);
+            var inputSlots  = PresetStore.CaptureSlots(SlotIds(p.InputSlots),  state.Inputs,  endpoints.Capture());
+            var outputSlots = PresetStore.CaptureSlots(SlotIds(p.OutputSlots), state.Outputs, endpoints.Render());
 
             var preset = store.Capture(name, state, endpoints, inputSlots, outputSlots);
             try
@@ -102,11 +103,10 @@ public static class PresetHandlers
             return Task.FromResult<object?>(new { ok = true });
         });
 
-        dispatcher.Register("loadPreset", (paramsEl, _, _) =>
+        dispatcher.Register("loadPreset", async (paramsEl, _, ct) =>
         {
-            var p      = JsonRpcDispatcher.RequireParams<NameParam>(paramsEl);
-            var name   = NormalizeName(p.Name);
-            var engine = RequireEngine(host);
+            var p    = JsonRpcDispatcher.RequireParams<NameParam>(paramsEl);
+            var name = NormalizeName(p.Name);
 
             Preset preset;
             try
@@ -126,20 +126,22 @@ public static class PresetHandlers
                 throw new JsonRpcException(JsonRpcErrorCode.InvalidParams, ex.Message);
             }
 
-            var current = engine.SnapshotState();
-            var result  = store.Apply(preset, current, endpoints);
-            engine.PublishState(result.NextState);
+            var result = await ApplyPresetAsync(host, factory, store, suppressions, preset, endpoints, ct);
 
             store.SetLastPresetName(name);
             currentPreset.Set(name, result.InputSlots, result.OutputSlots);
 
-            return Task.FromResult<object?>(new
+            // Placeholder channels for apps / devices the preset uses may be
+            // attachable right away — don't wait for the next watcher tick.
+            watcher?.RequestReconcile();
+
+            return new
             {
                 ok = true,
                 missingDevices = result.MissingDevices,
                 inputSlots     = result.InputSlots,
                 outputSlots    = result.OutputSlots,
-            });
+            };
         });
 
         dispatcher.Register("deletePreset", (paramsEl, _, _) =>
@@ -205,32 +207,84 @@ public static class PresetHandlers
     }
 
     /// <summary>
-    /// Enrich each FE-supplied slot device id into a <see cref="PresetSlot"/>
-    /// holding friendly + interface name (the stable identity used for
-    /// re-resolution at load time). A slot whose device id is null or no
-    /// longer in the live endpoint set becomes an unassigned placeholder
-    /// (both names null).
+    /// Project <paramref name="preset"/> onto the running engine. Placeholder
+    /// channels the preset needs are attached as empty slots (or, when the
+    /// engine has no spare slots, the engine is rebuilt around the new state)
+    /// before the state is published. Used by <c>loadPreset</c> and by the
+    /// startup auto-load.
     /// </summary>
-    private static PresetSlot[] ToPresetSlots(
-        SlotDeviceDto[]? input,
-        IReadOnlyDictionary<string, AudioEndpoint> endpointLookup)
+    public static async Task<PresetApplyResult> ApplyPresetAsync(
+        EngineHost          host,
+        EngineFactory       factory,
+        PresetStore         store,
+        ProcessSuppressions suppressions,
+        Preset              preset,
+        IEndpointSource     endpoints,
+        CancellationToken   ct = default)
     {
-        if (input is null || input.Length == 0) return Array.Empty<PresetSlot>();
-        var result = new PresetSlot[input.Length];
-        for (var i = 0; i < input.Length; i++)
+        // Enumerate endpoints once, up front, so applying the preset inside the
+        // state lock below is pure computation.
+        var cachedEndpoints = new CachedEndpoints(endpoints.Capture(), endpoints.Render());
+        PresetApplyResult? applied = null;
+
+        await host.ChangeTopologyAsync(factory, engine =>
         {
-            var deviceId = input[i].DeviceId;
-            if (string.IsNullOrEmpty(deviceId) || !endpointLookup.TryGetValue(deviceId, out var ep))
+            // Channel ids only change under the topology lock we hold, so this
+            // preview settles which placeholder slots the preset needs.
+            var preview = store.Apply(preset, engine.SnapshotState(), cachedEndpoints);
+            var next    = preview.NextState;
+
+            // Apps the preset uses are wanted, even if the user detached them
+            // earlier in this session.
+            foreach (var ch in next.Inputs)
+                if (ProcessChannelId.TryGetProcessName(ch.Id, out var app)) suppressions.Remove(app);
+
+            var addedInputs  = next.Inputs.Length  - engine.InputCount;
+            var addedOutputs = next.Outputs.Length - engine.OutputCount;
+            if (addedInputs  > engine.InputCapacity  - engine.InputCount ||
+                addedOutputs > engine.OutputCapacity - engine.OutputCount)
             {
-                result[i] = new PresetSlot(null, null);
+                applied = preview;
+                return TopologyOutcome.Rebuild(next);
             }
-            else
+
+            for (var i = engine.InputCount;  i < next.Inputs.Length;  i++) engine.TryAppendCapture(null, next.Inputs[i]);
+            for (var o = engine.OutputCount; o < next.Outputs.Length; o++) engine.TryAppendRender(null, next.Outputs[o]);
+
+            // Apply again on the latest state, inside the state lock, so a gain or
+            // route change that landed after the preview survives on channels the
+            // preset doesn't cover.
+            engine.UpdateState(s =>
             {
-                result[i] = new PresetSlot(ep.FriendlyName, ep.InterfaceName);
-            }
-        }
-        return result;
+                applied = store.Apply(preset, s, cachedEndpoints);
+                return applied.NextState;
+            });
+
+            return addedInputs > 0 || addedOutputs > 0 ? TopologyOutcome.ChangedState : TopologyOutcome.Unchanged;
+        }, ct);
+
+        return applied
+            ?? throw new JsonRpcException(JsonRpcErrorCode.EngineUnavailable, "Audio engine not running.");
     }
+
+    /// <summary>Endpoint lists enumerated once, so applying a preset under a lock doesn't touch COM.</summary>
+    private sealed class CachedEndpoints : IEndpointSource
+    {
+        private readonly IReadOnlyList<AudioEndpoint> _capture;
+        private readonly IReadOnlyList<AudioEndpoint> _render;
+
+        public CachedEndpoints(IReadOnlyList<AudioEndpoint> capture, IReadOnlyList<AudioEndpoint> render)
+        {
+            _capture = capture;
+            _render  = render;
+        }
+
+        public IReadOnlyList<AudioEndpoint> Capture() => _capture;
+        public IReadOnlyList<AudioEndpoint> Render()  => _render;
+    }
+
+    private static string?[] SlotIds(SlotDeviceDto[]? slots)
+        => slots is null ? Array.Empty<string?>() : slots.Select(s => s.DeviceId).ToArray();
 
     /// <summary>
     /// Echo the FE-supplied device ids back as <see cref="ResolvedSlot"/>s

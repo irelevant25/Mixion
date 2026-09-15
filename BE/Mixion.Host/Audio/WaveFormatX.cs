@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using NAudio.Wave;
 
 namespace Mixion.Host.Audio;
@@ -51,61 +52,105 @@ internal static class WaveFormatX
 
     /// <summary>
     /// Convert <paramref name="bytes"/> (interleaved, in <paramref name="fmt"/>'s
-    /// native sample type) to mono float samples in <paramref name="dstMono"/>.
-    /// Returns the number of mono frames written.
+    /// native sample type) to interleaved stereo float frames
+    /// (<c>L, R, L, R, …</c>) in <paramref name="dstStereo"/>. Returns the number
+    /// of frames written — i.e. <c>2 × frames</c> floats. Frames that don't fit
+    /// in the destination are dropped rather than overrunning it.
     ///
-    /// Shared by capture and loopback paths — both feed mono float rings.
+    /// Channel mapping:
+    /// <list type="bullet">
+    ///   <item>1 channel — duplicated to both sides.</item>
+    ///   <item>2 channels — L and R pass straight through.</item>
+    ///   <item>3+ channels — the first pair stays the L/R image; every further
+    ///         channel (centre, LFE, surrounds, extra interface inputs) is folded
+    ///         equally into both sides, normalised so a signal present on every
+    ///         channel keeps unity level.</item>
+    /// </list>
+    ///
+    /// Shared by every capture source — they all feed stereo float rings. No
+    /// allocations.
     /// </summary>
-    public static int ConvertToMono(ReadOnlySpan<byte> bytes, WaveFormat fmt, Span<float> dstMono)
+    public static int ConvertToStereo(ReadOnlySpan<byte> bytes, WaveFormat fmt, Span<float> dstStereo)
     {
         var channels = fmt.Channels;
         if (channels <= 0) return 0;
-        var inv = 1f / channels;
 
         if (IsFloat(fmt) && fmt.BitsPerSample == 32)
-        {
-            var src    = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(bytes);
-            var frames = src.Length / channels;
-            for (var i = 0; i < frames; i++)
-            {
-                var sum = 0f;
-                var off = i * channels;
-                for (var c = 0; c < channels; c++) sum += src[off + c];
-                dstMono[i] = sum * inv;
-            }
-            return frames;
-        }
+            return FoldToStereo<float, Float32Sample>(MemoryMarshal.Cast<byte, float>(bytes), channels, dstStereo);
 
         if (IsPcm(fmt) && fmt.BitsPerSample == 16)
-        {
-            var src    = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes);
-            var frames = src.Length / channels;
-            const float scale = 1f / 32768f;
-            for (var i = 0; i < frames; i++)
-            {
-                var sum = 0f;
-                var off = i * channels;
-                for (var c = 0; c < channels; c++) sum += src[off + c] * scale;
-                dstMono[i] = sum * inv;
-            }
-            return frames;
-        }
+            return FoldToStereo<short, Pcm16Sample>(MemoryMarshal.Cast<byte, short>(bytes), channels, dstStereo);
 
         if (IsPcm(fmt) && fmt.BitsPerSample == 32)
-        {
-            var src    = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, int>(bytes);
-            var frames = src.Length / channels;
-            const float scale = 1f / int.MaxValue;
-            for (var i = 0; i < frames; i++)
-            {
-                var sum = 0f;
-                var off = i * channels;
-                for (var c = 0; c < channels; c++) sum += src[off + c] * scale;
-                dstMono[i] = sum * inv;
-            }
-            return frames;
-        }
+            return FoldToStereo<int, Pcm32Sample>(MemoryMarshal.Cast<byte, int>(bytes), channels, dstStereo);
 
         throw new NotSupportedException($"Unsupported capture format: {Describe(fmt)}");
+    }
+
+    private static int FoldToStereo<T, TSample>(ReadOnlySpan<T> src, int channels, Span<float> dst)
+        where T : unmanaged
+        where TSample : ISampleConverter<T>
+    {
+        var frames = Math.Min(src.Length / channels, dst.Length / 2);
+
+        switch (channels)
+        {
+            case 1:
+                for (var i = 0; i < frames; i++)
+                {
+                    var v = TSample.ToFloat(src[i]);
+                    dst[i * 2]     = v;
+                    dst[i * 2 + 1] = v;
+                }
+                break;
+
+            case 2:
+                for (var i = 0; i < frames; i++)
+                {
+                    dst[i * 2]     = TSample.ToFloat(src[i * 2]);
+                    dst[i * 2 + 1] = TSample.ToFloat(src[i * 2 + 1]);
+                }
+                break;
+
+            default:
+                // (front side + Σ extras) / (channels − 1).
+                var inv = 1f / (channels - 1);
+                for (var i = 0; i < frames; i++)
+                {
+                    var off    = i * channels;
+                    var extras = 0f;
+                    for (var c = 2; c < channels; c++) extras += TSample.ToFloat(src[off + c]);
+                    dst[i * 2]     = (TSample.ToFloat(src[off])     + extras) * inv;
+                    dst[i * 2 + 1] = (TSample.ToFloat(src[off + 1]) + extras) * inv;
+                }
+                break;
+        }
+
+        return frames;
+    }
+
+    /// <summary>
+    /// Per-sample-type scaling to <c>[-1, 1]</c> float. Static abstract so the
+    /// JIT specialises <see cref="FoldToStereo{T, TSample}"/> per format with no
+    /// indirect call on the capture thread.
+    /// </summary>
+    private interface ISampleConverter<T> where T : unmanaged
+    {
+        static abstract float ToFloat(T sample);
+    }
+
+    private readonly struct Float32Sample : ISampleConverter<float>
+    {
+        public static float ToFloat(float sample) => sample;
+    }
+
+    private readonly struct Pcm16Sample : ISampleConverter<short>
+    {
+        public static float ToFloat(short sample) => sample * (1f / 32768f);
+    }
+
+    private readonly struct Pcm32Sample : ISampleConverter<int>
+    {
+        public static float ToFloat(int sample) => sample * (1f / 2147483648f);
     }
 }

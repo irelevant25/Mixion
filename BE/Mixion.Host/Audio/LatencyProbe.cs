@@ -24,9 +24,10 @@ public sealed class LatencyProbe
     public required float[] Burst { get; init; }
 
     /// <summary>
-    /// Pre-allocated capture log. Holds the chosen input's mono frames
-    /// from t=0 (probe set) onward. Sized for the maximum round-trip we
-    /// expect to measure (e.g. 500 ms at engine sample rate).
+    /// Pre-allocated capture log. Holds the chosen input's frames (the
+    /// louder of L/R per sample) from t=0 (probe set) onward. Sized for the
+    /// maximum round-trip we expect to measure (e.g. 500 ms at engine sample
+    /// rate).
     /// </summary>
     public required float[] WatchBuffer { get; init; }
 

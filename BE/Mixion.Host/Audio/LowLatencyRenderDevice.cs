@@ -41,8 +41,8 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
     private uint                _bufferFrames;
     private int                 _periodFrames;
     private Thread?             _renderThread;
-    private IntPtr              _mmcssHandle;
     private volatile bool       _running;
+    private volatile bool       _faulted;
 
     public string     Id           => _id;
     public string     FriendlyName => _friendlyName;
@@ -54,6 +54,7 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
     public int        BufferFrames => _periodFrames;
     public RenderMode Mode         => RenderMode.SharedLowLatency;
     public string? ExclusiveFallbackReason { get; set; }
+    public bool       IsFaulted    => _faulted;
 
     public LowLatencyRenderDevice(MMDevice device, int ringCapacityFrames)
     {
@@ -197,7 +198,6 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
 
         RunOnMta(() => _audioClient!.Start());
         _running = true;
-        _mmcssHandle = Mmcss.Begin();
 
         _renderThread = new Thread(RenderLoop)
         {
@@ -219,9 +219,6 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
         if (_eventHandle != IntPtr.Zero) SetEvent(_eventHandle);
         _renderThread?.Join(TimeSpan.FromSeconds(2));
         _renderThread = null;
-
-        Mmcss.Revert(_mmcssHandle);
-        _mmcssHandle = IntPtr.Zero;
     }
 
     public void Dispose()
@@ -251,6 +248,20 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
 
     private void RenderLoop()
     {
+        // MMCSS belongs on the thread that talks to the device.
+        var mmcss = Mmcss.Begin();
+        try
+        {
+            RenderLoopCore();
+        }
+        finally
+        {
+            Mmcss.Revert(mmcss);
+        }
+    }
+
+    private void RenderLoopCore()
+    {
         const uint waitMs = 100;
         var channels = _format.Channels;
 
@@ -258,16 +269,22 @@ public sealed class LowLatencyRenderDevice : IRenderDevice
         {
             var rc = WaitForSingleObject(_eventHandle, waitMs);
             if (!_running) break;
-            if (rc != 0 && rc != 0x102) break;
+            if (rc != 0 && rc != 0x102)
+            {
+                _faulted = true;
+                break;
+            }
 
             if (_audioClient is null || _renderClient is null) return;
 
-            // Ask how much room is in the device's buffer right now.
-            if (_audioClient.GetCurrentPadding(out var padding) < 0) continue;
+            // Ask how much room is in the device's buffer right now. Failures
+            // here mean the stream was invalidated (device removed, format
+            // changed) — it won't recover, so report the fault and stop.
+            if (_audioClient.GetCurrentPadding(out var padding) < 0) { _faulted = true; return; }
             var framesAvailable = _bufferFrames - padding;
             if (framesAvailable == 0) continue;
 
-            if (_renderClient.GetBuffer(framesAvailable, out var bufferPtr) < 0) continue;
+            if (_renderClient.GetBuffer(framesAvailable, out var bufferPtr) < 0) { _faulted = true; return; }
             if (bufferPtr == IntPtr.Zero) { _renderClient.ReleaseBuffer(0, 0); continue; }
 
             var totalFloats = (int)framesAvailable * channels;

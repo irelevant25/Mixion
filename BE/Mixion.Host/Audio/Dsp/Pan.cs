@@ -10,13 +10,10 @@ namespace Mixion.Host.Audio.Dsp;
 /// (the canonical -3 dB centre dip you'd see on a hardware desk). The
 /// extremes go to (1, 0) and (0, 1).
 ///
-/// The mix engine's signal path is mono today — buses are <c>float[]</c>
-/// per channel, not per side — so the pan stage applies a single
-/// scalar based on the position. <see cref="MonoGain"/> picks the
-/// dominant leg (max(L, R)), which keeps full level at the extremes
-/// and produces an audible -3 dB centre dip when the stage is
-/// engaged. When stereo buses arrive in a future milestone, the same
-/// L/R pair from <see cref="Compute"/> is what we'll route to each side.
+/// The mix engine itself uses <see cref="ComputeBalance"/>: every bus is
+/// stereo, so the "pan" control on a strip is a balance control with unity
+/// on both sides at centre. <see cref="Compute"/> and <see cref="MonoGain"/>
+/// remain for callers that want the constant-power law.
 /// </summary>
 public static class Pan
 {

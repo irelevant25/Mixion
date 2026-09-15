@@ -25,11 +25,14 @@ namespace Mixion.Host.Audio;
 /// </summary>
 public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
 {
+    /// <summary><c>AUDCLNT_BUFFERFLAGS_SILENT</c> — the packet is silence and its bytes are undefined.</summary>
+    private const uint BufferFlagsSilent = 0x2;
+
     private readonly string         _id;
     private readonly string         _friendlyName;
     private readonly WaveFormat     _format;
     private readonly RingBuffer     _ring;
-    private readonly float[]        _scratchMono;
+    private readonly float[]        _scratch;
     private readonly byte[]         _scratchBytes;
     private readonly int            _bufferMs;
 
@@ -37,8 +40,8 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
     private IAudioCaptureClient? _captureClient;
     private IntPtr               _eventHandle = IntPtr.Zero;
     private Thread?              _captureThread;
-    private IntPtr               _mmcssHandle;
     private volatile bool        _running;
+    private volatile bool        _faulted;
     private int                  _bufferFrames;
 
     public string     Id           => _id;
@@ -49,6 +52,7 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
     public RingBuffer Ring         => _ring;
     public int        BufferMilliseconds => _bufferMs;
     public int        BufferFrames => _bufferFrames;
+    public bool       IsFaulted    => _faulted;
     public event EventHandler? DataReady;
 
     /// <summary>
@@ -56,14 +60,15 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
     /// Throws on any unsupported state — caller is expected to fall back
     /// to <see cref="CaptureDevice"/>.
     /// </summary>
-    public LowLatencyCaptureDevice(MMDevice device, int ringCapacitySamples)
+    public LowLatencyCaptureDevice(MMDevice device, int ringCapacityFrames)
     {
         _id           = device.ID;
         _friendlyName = device.FriendlyName;
         _format       = device.AudioClient.MixFormat;
-        _ring         = new RingBuffer(ringCapacitySamples);
-        _scratchMono  = new float[ringCapacitySamples];
-        _scratchBytes = new byte[ringCapacitySamples * Math.Max(1, _format.Channels) * (_format.BitsPerSample / 8)];
+        // Interleaved stereo — 2 floats per frame.
+        _ring         = new RingBuffer(ringCapacityFrames * 2);
+        _scratch      = new float[ringCapacityFrames * 2];
+        _scratchBytes = new byte[ringCapacityFrames * Math.Max(1, _format.Channels) * (_format.BitsPerSample / 8)];
 
         var bufferMsHolder = 0;
         RunOnMta(() => bufferMsHolder = ActivateAndInitialize());
@@ -178,7 +183,6 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
 
         RunOnMta(() => _audioClient!.Start());
         _running = true;
-        _mmcssHandle = Mmcss.Begin();
 
         _captureThread = new Thread(CaptureLoop)
         {
@@ -200,9 +204,6 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
         if (_eventHandle != IntPtr.Zero) SetEvent(_eventHandle);
         _captureThread?.Join(TimeSpan.FromSeconds(2));
         _captureThread = null;
-
-        Mmcss.Revert(_mmcssHandle);
-        _mmcssHandle = IntPtr.Zero;
     }
 
     public void Dispose()
@@ -232,36 +233,67 @@ public sealed class LowLatencyCaptureDevice : IAudioCaptureSource
 
     private void CaptureLoop()
     {
+        // MMCSS belongs on the thread that talks to the device.
+        var mmcss = Mmcss.Begin();
+        try
+        {
+            CaptureLoopCore();
+        }
+        finally
+        {
+            Mmcss.Revert(mmcss);
+        }
+    }
+
+    private void CaptureLoopCore()
+    {
         const uint waitMs = 100;
         var bytesPerFrame = _format.Channels * (_format.BitsPerSample / 8);
+        var maxFrames     = (uint)(_scratchBytes.Length / bytesPerFrame);
 
         while (_running)
         {
             var rc = WaitForSingleObject(_eventHandle, waitMs);
             if (!_running) break;
             // 0 = signalled (data ready), 0x102 = timeout (silent device — keep polling).
-            if (rc != 0 && rc != 0x102) break;
+            if (rc != 0 && rc != 0x102)
+            {
+                _faulted = true;
+                break;
+            }
 
             while (true)
             {
                 if (_captureClient is null) return;
 
+                // A failing call here means the stream was invalidated (device
+                // removed, format changed) — it will never recover on its own.
                 var hr = _captureClient.GetNextPacketSize(out var packetFrames);
-                if (hr < 0 || packetFrames == 0) break;
+                if (hr < 0) { _faulted = true; return; }
+                if (packetFrames == 0) break;
 
-                hr = _captureClient.GetBuffer(out var dataPtr, out var framesAvailable, out var _, out var _, out var _);
-                if (hr < 0) break;
+                hr = _captureClient.GetBuffer(out var dataPtr, out var framesAvailable, out var flags, out var _, out var _);
+                if (hr < 0) { _faulted = true; return; }
 
                 try
                 {
-                    if (framesAvailable > 0)
+                    var frames = (int)Math.Min(framesAvailable, maxFrames);
+                    if (frames > 0)
                     {
-                        var byteCount = (int)framesAvailable * bytesPerFrame;
-                        if (byteCount > _scratchBytes.Length) byteCount = _scratchBytes.Length;
-                        Marshal.Copy(dataPtr, _scratchBytes, 0, byteCount);
-                        var written = WaveFormatX.ConvertToMono(
-                            _scratchBytes.AsSpan(0, byteCount), _format, _scratchMono);
-                        _ring.Write(_scratchMono.AsSpan(0, written));
+                        if ((flags & BufferFlagsSilent) != 0)
+                        {
+                            var silence = _scratch.AsSpan(0, frames * 2);
+                            silence.Clear();
+                            _ring.Write(silence);
+                        }
+                        else
+                        {
+                            var byteCount = frames * bytesPerFrame;
+                            Marshal.Copy(dataPtr, _scratchBytes, 0, byteCount);
+                            var written = WaveFormatX.ConvertToStereo(
+                                _scratchBytes.AsSpan(0, byteCount), _format, _scratch);
+                            _ring.Write(_scratch.AsSpan(0, written * 2));
+                        }
                         DataReady?.Invoke(this, EventArgs.Empty);
                     }
                 }

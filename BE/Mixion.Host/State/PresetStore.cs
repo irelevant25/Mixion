@@ -307,32 +307,41 @@ public sealed class PresetStore
     ///
     /// For each preset channel, find the best matching live channel (by id,
     /// then friendly + interface name, then friendly name alone). Apply
-    /// gain/mute/solo to that live channel and remap the matrix into the
-    /// current channel ordering. Preset channels with no live match are
-    /// reported via <see cref="PresetApplyResult.MissingDevices"/> — the
-    /// state still applies for the channels that did match (warn, don't
-    /// throw).
+    /// gain/mute/solo/DSP to that live channel and remap the matrix into the
+    /// current channel ordering.
+    ///
+    /// A slot bound to a channel that isn't present at all (an app that isn't
+    /// running, an unplugged device) gets a placeholder channel with
+    /// <c>Available = false</c> appended, so the slot binding and the channel's
+    /// saved settings survive; <see cref="PresetApplyResult.NextState"/> can
+    /// therefore hold more channels than <paramref name="current"/>. Other
+    /// preset channels with no match are reported via
+    /// <see cref="PresetApplyResult.MissingDevices"/> (apps excluded — they come
+    /// and go) and the state still applies for the channels that matched.
     /// </summary>
     public PresetApplyResult Apply(Preset preset, MixerState current, IEndpointSource endpoints)
     {
         var captureEndpoints = endpoints.Capture();
         var renderEndpoints  = endpoints.Render();
 
-        var (inputMap,  inputMissing)  = ResolveBus(preset.Inputs,  current.Inputs,  captureEndpoints);
-        var (outputMap, outputMissing) = ResolveBus(preset.Outputs, current.Outputs, renderEndpoints);
+        var inputBus  = WithSlotPlaceholders(current.Inputs,  preset.InputSlots,  preset.Inputs,  captureEndpoints);
+        var outputBus = WithSlotPlaceholders(current.Outputs, preset.OutputSlots, preset.Outputs, renderEndpoints);
 
-        var nextInputs  = ApplyChannelPatches(current.Inputs,  preset.Inputs,  inputMap);
-        var nextOutputs = ApplyChannelPatches(current.Outputs, preset.Outputs, outputMap);
+        var (inputMap,  inputMissing)  = ResolveBus(preset.Inputs,  inputBus,  captureEndpoints);
+        var (outputMap, outputMissing) = ResolveBus(preset.Outputs, outputBus, renderEndpoints);
+
+        var nextInputs  = ApplyChannelPatches(inputBus,  preset.Inputs,  inputMap);
+        var nextOutputs = ApplyChannelPatches(outputBus, preset.Outputs, outputMap);
 
         var nextMatrix = RemapMatrix(
             preset.Matrix,
-            current.Matrix.Inputs,
-            current.Matrix.Outputs,
+            inputBus.Length,
+            outputBus.Length,
             inputMap,
             outputMap);
 
-        var inputSlots  = ResolveSlots(preset.InputSlots,  current.Inputs,  captureEndpoints);
-        var outputSlots = ResolveSlots(preset.OutputSlots, current.Outputs, renderEndpoints);
+        var inputSlots  = ResolveSlots(preset.InputSlots,  inputBus,  captureEndpoints);
+        var outputSlots = ResolveSlots(preset.OutputSlots, outputBus, renderEndpoints);
 
         var missing = new List<MissingDevice>(inputMissing.Count + outputMissing.Count);
         foreach (var c in inputMissing)
@@ -469,8 +478,9 @@ public sealed class PresetStore
             {
                 taken[match] = true;
             }
-            else
+            else if (!ProcessChannelId.IsProcess(pc.DeviceId))
             {
+                // Apps come and go — one that isn't running isn't a missing device.
                 missing.Add(pc);
             }
         }
@@ -479,12 +489,43 @@ public sealed class PresetStore
     }
 
     /// <summary>
+    /// Build the persisted slot layout from the FE's ordered list of slot
+    /// channel ids (null = unassigned). Each assigned slot keeps its channel id —
+    /// exact re-binding, and the only identity an app channel has — plus the
+    /// friendly + interface name for matching on a machine where the id differs.
+    /// </summary>
+    public static PresetSlot[] CaptureSlots(
+        IReadOnlyList<string?>       channelIds,
+        ImmutableArray<Channel>      channels,
+        IReadOnlyList<AudioEndpoint> endpoints)
+    {
+        if (channelIds.Count == 0) return Array.Empty<PresetSlot>();
+
+        var endpointById = ToLookup(endpoints);
+        var result = new PresetSlot[channelIds.Count];
+        for (var s = 0; s < channelIds.Count; s++)
+        {
+            var id = channelIds[s];
+            if (string.IsNullOrEmpty(id))
+            {
+                result[s] = new PresetSlot(null, null);
+                continue;
+            }
+
+            endpointById.TryGetValue(id, out var ep);
+            var channelName = FindChannel(channels, id)?.Name;
+            result[s] = new PresetSlot(ep?.FriendlyName ?? channelName, ep?.InterfaceName, id);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Resolve a row of <see cref="PresetSlot"/> entries against live
     /// channels. The slot layout itself doesn't contribute to
-    /// <c>MissingDevices</c>: any device a slot referenced was already
-    /// reported as a missing channel above (slots can't reference devices
-    /// the channel set doesn't). We simply hand the FE the resolved id (or
-    /// null) so it can rebuild its strip row in the saved order.
+    /// <c>MissingDevices</c>: a slot whose channel can't be found at all got a
+    /// placeholder channel in <see cref="WithSlotPlaceholders"/>. We simply hand
+    /// the FE the resolved id (or null) so it can rebuild its strip row in the
+    /// saved order.
     /// </summary>
     private static ResolvedSlot[] ResolveSlots(
         PresetSlot[] presetSlots,
@@ -493,53 +534,97 @@ public sealed class PresetStore
     {
         if (presetSlots.Length == 0) return Array.Empty<ResolvedSlot>();
 
-        var endpointById = currentEndpoints.ToDictionary(e => e.Id, StringComparer.Ordinal);
+        var endpointById = ToLookup(currentEndpoints);
         var result = new ResolvedSlot[presetSlots.Length];
-
         for (var s = 0; s < presetSlots.Length; s++)
-        {
-            var slot = presetSlots[s];
-            // Empty slot (placeholder) — keep the position but no device.
-            if (string.IsNullOrEmpty(slot.FriendlyName))
-            {
-                result[s] = new ResolvedSlot(null);
-                continue;
-            }
-
-            string? matchedId = null;
-
-            // friendly + interface
-            if (!string.IsNullOrEmpty(slot.InterfaceName))
-            {
-                for (var i = 0; i < current.Length; i++)
-                {
-                    if (!endpointById.TryGetValue(current[i].Id, out var ep)) continue;
-                    if (string.Equals(ep.FriendlyName,  slot.FriendlyName,  StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(ep.InterfaceName, slot.InterfaceName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        matchedId = current[i].Id;
-                        break;
-                    }
-                }
-            }
-
-            // friendly only
-            if (matchedId is null)
-            {
-                for (var i = 0; i < current.Length; i++)
-                {
-                    if (string.Equals(current[i].Name, slot.FriendlyName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        matchedId = current[i].Id;
-                        break;
-                    }
-                }
-            }
-
-            result[s] = new ResolvedSlot(matchedId);
-        }
+            result[s] = new ResolvedSlot(ResolveSlotId(presetSlots[s], current, endpointById));
 
         return result;
+    }
+
+    /// <summary>
+    /// Live channel id for one saved slot: exact channel id first, then
+    /// friendly + interface name, then friendly name alone. Null for an
+    /// unassigned slot or when nothing matches.
+    /// </summary>
+    private static string? ResolveSlotId(
+        PresetSlot slot,
+        ImmutableArray<Channel> current,
+        IReadOnlyDictionary<string, AudioEndpoint> endpointById)
+    {
+        if (!string.IsNullOrEmpty(slot.DeviceId) && FindChannel(current, slot.DeviceId) is { } exact)
+            return exact.Id;
+
+        if (string.IsNullOrEmpty(slot.FriendlyName)) return null;
+
+        if (!string.IsNullOrEmpty(slot.InterfaceName))
+        {
+            foreach (var ch in current)
+            {
+                if (!endpointById.TryGetValue(ch.Id, out var ep)) continue;
+                if (string.Equals(ep.FriendlyName,  slot.FriendlyName,  StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(ep.InterfaceName, slot.InterfaceName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ch.Id;
+                }
+            }
+        }
+
+        foreach (var ch in current)
+        {
+            if (string.Equals(ch.Name, slot.FriendlyName, StringComparison.OrdinalIgnoreCase))
+                return ch.Id;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Append an unavailable placeholder channel for every slot whose saved
+    /// channel id matches nothing in <paramref name="current"/> — not by id,
+    /// not by name. The placeholder carries the saved id and name, so the slot
+    /// stays bound, the preset's settings for that channel apply to it, and the
+    /// device watcher attaches it when the device or app appears.
+    /// </summary>
+    private static ImmutableArray<Channel> WithSlotPlaceholders(
+        ImmutableArray<Channel>      current,
+        PresetSlot[]                 slots,
+        PresetChannel[]              presetChannels,
+        IReadOnlyList<AudioEndpoint> endpoints)
+    {
+        if (slots.Length == 0) return current;
+
+        var endpointById = ToLookup(endpoints);
+        var bus = current;
+        foreach (var slot in slots)
+        {
+            if (string.IsNullOrEmpty(slot.DeviceId)) continue;
+            if (ResolveSlotId(slot, bus, endpointById) is not null) continue;
+
+            var saved = Array.Find(presetChannels, pc => string.Equals(pc.DeviceId, slot.DeviceId, StringComparison.Ordinal));
+            var name  = saved?.FriendlyName
+                        ?? slot.FriendlyName
+                        ?? (ProcessChannelId.TryGetProcessName(slot.DeviceId, out var app)
+                            ? ProcessChannelId.DisplayName(app)
+                            : "Unavailable device");
+
+            bus = bus.Add(new Channel(slot.DeviceId, name, GainDb: 0f, Muted: false, Soloed: false, Available: false));
+        }
+        return bus;
+    }
+
+    private static Channel? FindChannel(ImmutableArray<Channel> channels, string id)
+    {
+        foreach (var ch in channels)
+            if (string.Equals(ch.Id, id, StringComparison.Ordinal)) return ch;
+        return null;
+    }
+
+    private static Dictionary<string, AudioEndpoint> ToLookup(IReadOnlyList<AudioEndpoint> endpoints)
+    {
+        var lookup = new Dictionary<string, AudioEndpoint>(StringComparer.Ordinal);
+        foreach (var e in endpoints) lookup[e.Id] = e;
+        return lookup;
     }
 
     private static ImmutableArray<Channel> ApplyChannelPatches(
@@ -557,13 +642,14 @@ public sealed class PresetStore
 
             var pc = presetChannels[p];
             var ch = builder[ci];
-            // Preserve the live device id + name; only copy operational +
-            // DSP state. Pan / Gate / Compressor / Eq round-trip from BE-070
-            // so a loaded preset restores the user's full chain.
+            // Preserve the live device id, name and availability; only copy
+            // operational + DSP state. Pan / Gate / Compressor / Eq round-trip
+            // from BE-070 so a loaded preset restores the user's full chain.
             builder[ci] = new Channel(
                 ch.Id, ch.Name,
                 pc.GainDb, pc.Muted, pc.Soloed,
-                pc.Pan, pc.Gate, pc.Compressor, pc.Eq);
+                pc.Pan, pc.Gate, pc.Compressor, pc.Eq,
+                ch.Available);
         }
 
         return builder.ToImmutable();

@@ -42,6 +42,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets the xUnit project exercise internal helpers (e.g. WaveFormatX) directly. -->
+    <InternalsVisibleTo Include="Mixion.Host.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!--
       The Angular bundle is copied here by build.ps1 before publish.
       Everything in wwwroot/ is embedded into the assembly so the .exe

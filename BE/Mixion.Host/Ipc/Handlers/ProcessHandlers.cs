@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+using System.Diagnostics;
 using Mixion.Host.Audio;
 using Mixion.Host.State;
 
@@ -7,50 +7,68 @@ namespace Mixion.Host.Ipc.Handlers;
 /// <summary>
 /// Per-process loopback management RPCs (BE-105):
 /// <list type="bullet">
-///   <item><c>listAudioProcesses</c> — read-only enumeration of currently audio-producing processes. The FE uses this to show an "Add app" sub-picker without forcing a full engine rebuild just to inspect the candidate list.</item>
-///   <item><c>removeProcessLoopback</c> — drop a single process-loopback channel from <see cref="MixerState"/> and rebuild the engine without re-discovering it. Useful when the user wants a specific app out of the mixer (or wants to free its WASAPI handle) without touching everything else.</item>
+///   <item><c>listAudioProcesses</c> — read-only enumeration of apps with an audio session. Lets the FE inspect candidates without touching the engine.</item>
+///   <item><c>removeProcessLoopback</c> — drop a single app channel from <see cref="MixerState"/> and rebuild the engine without it. The app is also kept out of automatic discovery for the rest of the session, so the device watcher doesn't attach it again a second later; a manual refresh brings it back.</item>
 /// </list>
 ///
-/// "Add" intentionally has no dedicated RPC: the existing
-/// <c>refreshDevices</c> already opens loopbacks for every audio-producing
-/// process, including newly launched ones. A separate
-/// <c>addProcessLoopback(name)</c> would do the same engine-rebuild work and
-/// add no new value over the broader refresh — we keep the API surface lean.
+/// "Add" intentionally has no RPC: the device watcher attaches every app that
+/// opens an audio session on its own.
 /// </summary>
 public static class ProcessHandlers
 {
     public sealed record RemoveParams(string ChannelId);
 
-    public static void Register(JsonRpcDispatcher dispatcher, EngineHost engineHost, EngineFactory engineFactory)
+    public static void Register(
+        JsonRpcDispatcher   dispatcher,
+        EngineHost          engineHost,
+        EngineFactory       engineFactory,
+        ProcessSuppressions suppressions)
     {
         dispatcher.Register("listAudioProcesses", (_, _, _) =>
         {
-            var enumerator = new AudioProcessEnumerator();
-            var processes = enumerator.Enumerate();
+            var processes = new AudioProcessEnumerator().Enumerate()
+                .DistinctBy(p => p.ProcessName, StringComparer.OrdinalIgnoreCase);
             // Surface the channel id we WOULD assign so the FE can dedupe
-            // against MixerState.Inputs (a process already wired up shows
+            // against MixerState.Inputs (an app already wired up shows
             // its existing channel id).
             var dto = processes.Select(p => new
             {
-                channelId       = $"process:{p.ProcessName}",
-                processId       = p.ProcessId,
-                processName     = p.ProcessName,
-                executablePath  = p.ExecutablePath,
+                channelId      = ProcessChannelId.For(p.ProcessName),
+                processId      = p.RootProcessId,
+                processName    = p.ProcessName,
+                executablePath = TryGetExecutablePath(p.RootProcessId),
             }).ToArray();
             return Task.FromResult<object?>(new { processes = dto });
         });
 
-        dispatcher.Register("removeProcessLoopback", async (paramsEl, _, _) =>
+        dispatcher.Register("removeProcessLoopback", async (paramsEl, _, ct) =>
         {
             var p = JsonRpcDispatcher.RequireParams<RemoveParams>(paramsEl);
+
+            if (ProcessChannelId.TryGetProcessName(p.ChannelId, out var app))
+                suppressions.Add(app);
 
             var newState = await engineHost.RebuildAsync(
                 engineFactory,
                 transform: prev => prev is null ? null : RemoveChannel(prev, p.ChannelId),
-                autoDiscoverNewProcesses: false);
+                autoDiscoverNewProcesses: false,
+                ct: ct);
 
             return newState.ToDto();
         });
+    }
+
+    private static string? TryGetExecutablePath(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.MainModule?.FileName;
+        }
+        catch
+        {
+            return null; // exited, or protected against MainModule access
+        }
     }
 
     /// <summary>

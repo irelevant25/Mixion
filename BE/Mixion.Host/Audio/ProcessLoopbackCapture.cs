@@ -1,31 +1,39 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Microsoft.Win32.SafeHandles;
 using NAudio.Wave;
+using Mixion.Host.Interop;
 
 namespace Mixion.Host.Audio;
 
 /// <summary>
-/// Captures audio from a single Windows process via the per-process WASAPI
+/// Captures audio from a single Windows app via the per-process WASAPI
 /// loopback API (Windows 10 build 20348+ / Windows 11). The OS isolates that
-/// process's render stream and delivers it independently of any virtual cable,
-/// so the app can mix Chrome / Spotify / OBS / a game without forcing the user
-/// to repoint Windows audio output at a virtual cable first.
+/// app's render streams and delivers them independently of any virtual cable,
+/// so the mixer can take Chrome / Spotify / OBS / a game without forcing the
+/// user to repoint Windows audio output at a virtual cable first.
 ///
 /// NAudio does not wrap this variant of WASAPI activation, so this class drives
 /// the native call chain directly:
 /// <list type="number">
-///   <item><c>ActivateAudioInterfaceAsync</c> with <c>AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK</c> + the target PID.</item>
+///   <item><c>ActivateAudioInterfaceAsync</c> with <c>AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK</c> + the target PID in include-process-tree mode.</item>
 ///   <item>Wait for the completion handler, fetch the resulting <c>IAudioClient</c> COM pointer.</item>
-///   <item><c>IAudioClient::Initialize</c> in shared loopback mode with a fixed 32-bit float stereo format at the engine sample rate (the OS resamples the source for us).</item>
-///   <item>Spin a dedicated capture thread that waits on an event handle and drains <c>IAudioCaptureClient::GetBuffer</c> into the engine's mono ring.</item>
+///   <item><c>IAudioClient::Initialize</c> in shared loopback mode with a fixed 16-bit PCM stereo format at the engine sample rate (the OS resamples the source for us).</item>
+///   <item>Spin a dedicated capture thread that waits on an event handle and drains <c>IAudioCaptureClient::GetBuffer</c> into the engine's stereo ring.</item>
 /// </list>
 ///
-/// Limitations worth knowing:
-/// <list type="bullet">
-///   <item>If the target process restarts, its PID changes; this capture goes silent. The host must re-enumerate to pick up the new PID. v1 documents this as a host-restart workaround.</item>
-///   <item>DRM-protected streams (some Spotify/Netflix configurations) refuse loopback at the OS level — same hard limit a virtual cable would hit.</item>
-///   <item>Build 20348 is required. Older Windows versions will fail at <c>ActivateAudioInterfaceAsync</c> with E_NOINTERFACE; the caller should treat any failure as "process loopback unavailable" and skip.</item>
-/// </list>
+/// Target choice: callers pass the app's <em>root</em> process
+/// (<see cref="ProcessSnapshot.ResolveAppRoot"/>). Multi-process apps play
+/// audio from a helper child — Chrome's audio service, for one — whose PID
+/// changes whenever the app recycles it; include-tree mode on the root keeps
+/// capturing across those recycles. When the root itself exits (the user
+/// closed the app) <see cref="HasTargetExited"/> reports it and the device
+/// watcher re-binds the channel to the next instance by name.
+///
+/// DRM-protected streams (some Spotify/Netflix configurations) refuse loopback
+/// at the OS level — the same hard limit a virtual cable would hit. Builds older
+/// than 20348 fail at <c>ActivateAudioInterfaceAsync</c>; callers treat any
+/// failure as "process loopback unavailable" and skip.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class ProcessLoopbackCapture : IAudioCaptureSource
@@ -41,26 +49,36 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
     private const uint  AudioClientStreamFlagsSrcDefaultQuality  = 0x08000000;
     private const uint  AudioClientShareModeShared               = 0;
     private const ushort PropVariantTypeBlob                     = 65; // VT_BLOB
-    private const int   ErrorPending                             = unchecked((int)0x8000000A);
+    private const uint  ActivationTypeProcessLoopback            = 1;
+    /// <summary><c>PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE</c> — the target and every process it spawns.</summary>
+    private const uint  ProcessLoopbackModeIncludeTree           = 0;
+    /// <summary><c>AUDCLNT_BUFFERFLAGS_SILENT</c> — the packet is silence and its bytes are undefined.</summary>
+    private const uint  BufferFlagsSilent                        = 0x2;
+    private const uint  ProcessQueryLimitedInformation           = 0x1000;
+    private const uint  Synchronize                              = 0x00100000;
 
     /// <summary>Capture buffer duration requested from WASAPI (hundred-nanoseconds). 20 ms — matches Microsoft's ApplicationLoopback reference sample.</summary>
     private const long BufferDurationHns = 200_000;
 
-    private readonly int           _processId;
-    private readonly RingBuffer    _ring;
-    private readonly float[]       _scratchMono;
-    private readonly byte[]        _scratchBytes;
-    private readonly int           _sampleRate;
-    private readonly WaveFormat    _format;
+    private readonly int                _processId;
+    private readonly RingBuffer         _ring;
+    private readonly float[]            _scratch;
+    private readonly byte[]             _scratchBytes;
+    private readonly int                _sampleRate;
+    private readonly WaveFormat         _format;
+    private readonly SafeProcessHandle? _processHandle;
 
     private IAudioClient?        _audioClient;
     private IAudioCaptureClient? _captureClient;
     private IntPtr               _eventHandle = IntPtr.Zero;
     private Thread?              _captureThread;
     private volatile bool        _running;
+    private volatile bool        _faulted;
 
     public string Id           { get; }
     public string FriendlyName { get; }
+    /// <summary>Executable name without extension — the identity the channel is keyed by.</summary>
+    public string ProcessName  { get; }
     public int    SampleRate   => _sampleRate;
     public int    SourceChannels => _format.Channels;
     public int    BitsPerSample  => _format.BitsPerSample;
@@ -69,31 +87,19 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
     // Process loopback uses a fixed buffer (BufferDurationHns); convert to
     // frames at the engine sample rate for MixEngine alignment.
     public int    BufferFrames => Math.Max(1, BufferMilliseconds * _sampleRate / 1000);
+    public bool   IsFaulted    => _faulted;
     public event EventHandler? DataReady;
 
-    /// <summary>Process id this capture was bound to. Public for diagnostics.</summary>
-    public int ProcessId => _processId;
+    /// <summary>Root process id this capture is bound to.</summary>
+    public int TargetProcessId => _processId;
 
-    public ProcessLoopbackCapture(int processId, string friendlyName, int sampleRate, int ringCapacitySamples)
+    public ProcessLoopbackCapture(int targetProcessId, string processName, int sampleRate, int ringCapacityFrames)
     {
-        _processId   = processId;
+        _processId   = targetProcessId;
         _sampleRate  = sampleRate;
-        _ring        = new RingBuffer(ringCapacitySamples);
-        _scratchMono = new float[ringCapacitySamples];
-        // Worst-case byte buffer: stereo float at the engine rate, sized to the
-        // ring capacity. Holds one WASAPI packet's bytes between the native
-        // pointer and our mono-conversion step. Avoids any per-tick allocation.
-        _scratchBytes = new byte[ringCapacitySamples * 2 * sizeof(float)];
-
-        // Stable id keyed by process *name* — survives the target process
-        // being restarted (PID changes, but Chrome is still Chrome). This is
-        // what lets a user keep their slot binding to "chrome" pointing at
-        // the same channel even after Chrome was closed and reopened. If
-        // multiple distinct apps share a process name (very rare on Windows),
-        // they'll collide on the same id; that's an acceptable trade for
-        // stability.
-        Id           = $"process:{friendlyName}";
-        FriendlyName = $"{friendlyName} (app)";
+        ProcessName  = processName;
+        Id           = ProcessChannelId.For(processName);
+        FriendlyName = ProcessChannelId.DisplayName(processName);
 
         // 16-bit PCM stereo at the engine rate. The OS resamples the source
         // process's actual format into this for us (via the AUTOCONVERTPCM
@@ -103,7 +109,46 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
         // processes but tripped E_INVALIDARG on others.
         _format = new WaveFormat(sampleRate, bits: 16, channels: 2);
 
-        Activate();
+        // Interleaved stereo — 2 floats per frame. The byte scratch holds one
+        // WASAPI packet between the native pointer and the float conversion.
+        _ring         = new RingBuffer(ringCapacityFrames * 2);
+        _scratch      = new float[ringCapacityFrames * 2];
+        _scratchBytes = new byte[ringCapacityFrames * _format.BlockAlign];
+
+        // Keep a handle to the target so exit detection is exact — a handle
+        // refers to this process object, so a recycled PID can't fool it.
+        // Elevated targets may refuse; HasTargetExited then returns null and
+        // the watcher falls back to a process snapshot.
+        var handle = NativeMethods.OpenProcess(ProcessQueryLimitedInformation | Synchronize, false, (uint)targetProcessId);
+        if (handle.IsInvalid) handle.Dispose();
+        else _processHandle = handle;
+
+        try
+        {
+            Activate();
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// True when the target process has exited, false while it runs, or null
+    /// when no handle to the target could be opened.
+    /// </summary>
+    public bool? HasTargetExited()
+    {
+        if (_processHandle is null) return null;
+        try
+        {
+            return NativeMethods.WaitForSingleObject(_processHandle, 0) == 0;
+        }
+        catch (ObjectDisposedException)
+        {
+            return true;
+        }
     }
 
     /// <summary>
@@ -127,9 +172,9 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
     {
         var paramsStruct = new AudioClientActivationParams
         {
-            ActivationType      = 1, // ProcessLoopback
+            ActivationType      = ActivationTypeProcessLoopback,
             TargetProcessId     = (uint)_processId,
-            ProcessLoopbackMode = 0, // Include
+            ProcessLoopbackMode = ProcessLoopbackModeIncludeTree,
         };
 
         var paramsHandle = GCHandle.Alloc(paramsStruct, GCHandleType.Pinned);
@@ -232,7 +277,7 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
         _captureThread = new Thread(CaptureLoop)
         {
             IsBackground = true,
-            Name         = $"ProcLoopback({_processId})",
+            Name         = $"ProcLoopback({ProcessName}:{_processId})",
             Priority     = ThreadPriority.AboveNormal,
         };
         _captureThread.Start();
@@ -274,6 +319,8 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
             NativeMethods.CloseHandle(_eventHandle);
             _eventHandle = IntPtr.Zero;
         }
+
+        _processHandle?.Dispose();
     }
 
     /// <summary>
@@ -309,36 +356,65 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
 
     private void CaptureLoop()
     {
+        // MMCSS belongs on the thread that talks to the device.
+        var mmcss = Mmcss.Begin();
+        try
+        {
+            CaptureLoopCore();
+        }
+        finally
+        {
+            Mmcss.Revert(mmcss);
+        }
+    }
+
+    private void CaptureLoopCore()
+    {
         const uint waitMs = 100;
-        var bytesPerFrame = _format.Channels * (_format.BitsPerSample / 8);
+        var bytesPerFrame = _format.BlockAlign;
+        var maxFrames     = (uint)(_scratchBytes.Length / bytesPerFrame);
 
         while (_running)
         {
             var rc = NativeMethods.WaitForSingleObject(_eventHandle, waitMs);
             if (!_running) break;
             // 0 = signalled (data ready), 0x102 = timeout (silent app — keep polling).
-            if (rc != 0 && rc != 0x102) break;
+            if (rc != 0 && rc != 0x102)
+            {
+                _faulted = true;
+                break;
+            }
 
             while (true)
             {
                 if (_captureClient is null) return;
 
                 var hr = _captureClient.GetNextPacketSize(out var packetFrames);
-                if (hr < 0 || packetFrames == 0) break;
+                if (hr < 0) { _faulted = true; return; }
+                if (packetFrames == 0) break;
 
                 hr = _captureClient.GetBuffer(out var dataPtr, out var framesAvailable, out var flags, out _, out _);
-                if (hr < 0) break;
+                if (hr < 0) { _faulted = true; return; }
 
                 try
                 {
-                    if (framesAvailable > 0)
+                    var frames = (int)Math.Min(framesAvailable, maxFrames);
+                    if (frames > 0)
                     {
-                        var byteCount = (int)framesAvailable * bytesPerFrame;
-                        if (byteCount > _scratchBytes.Length) byteCount = _scratchBytes.Length;
-                        Marshal.Copy(dataPtr, _scratchBytes, 0, byteCount);
-                        var written = WaveFormatX.ConvertToMono(
-                            _scratchBytes.AsSpan(0, byteCount), _format, _scratchMono);
-                        _ring.Write(_scratchMono.AsSpan(0, written));
+                        if ((flags & BufferFlagsSilent) != 0)
+                        {
+                            var silence = _scratch.AsSpan(0, frames * 2);
+                            silence.Clear();
+                            _ring.Write(silence);
+                        }
+                        else
+                        {
+                            var byteCount = frames * bytesPerFrame;
+                            Marshal.Copy(dataPtr, _scratchBytes, 0, byteCount);
+                            var written = WaveFormatX.ConvertToStereo(
+                                _scratchBytes.AsSpan(0, byteCount), _format, _scratch);
+                            _ring.Write(_scratch.AsSpan(0, written * 2));
+                        }
                         DataReady?.Invoke(this, EventArgs.Empty);
                     }
                 }
@@ -377,7 +453,7 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
     {
         public uint ActivationType;       // 0 = Default, 1 = ProcessLoopback
         public uint TargetProcessId;
-        public uint ProcessLoopbackMode;  // 0 = Include, 1 = Exclude
+        public uint ProcessLoopbackMode;  // 0 = Include tree, 1 = Exclude tree
     }
 
     /// <summary>
@@ -502,5 +578,11 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
 
         [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
         public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+        [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
+
+        [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern SafeProcessHandle OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
     }
 }

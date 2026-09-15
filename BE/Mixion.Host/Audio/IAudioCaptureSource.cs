@@ -4,12 +4,13 @@ namespace Mixion.Host.Audio;
 /// Common shape every input source feeding the <see cref="MixEngine"/> must
 /// honour. Decouples the engine from "is this a physical microphone, a virtual
 /// cable, or a per-process loopback?" — each implementation just has to
-/// produce mono float frames into a <see cref="RingBuffer"/> at a stable
-/// sample rate.
+/// produce interleaved stereo float frames into a <see cref="RingBuffer"/> at a
+/// stable sample rate.
 ///
 /// Implementations:
 /// <list type="bullet">
 ///   <item><see cref="CaptureDevice"/> — WASAPI shared-mode capture (mics, virtual cables).</item>
+///   <item><see cref="LowLatencyCaptureDevice"/> — IAudioClient3 shared-mode capture at the minimum engine period.</item>
 ///   <item><see cref="ProcessLoopbackCapture"/> — per-process loopback (Win10 20348+).</item>
 /// </list>
 /// </summary>
@@ -25,9 +26,9 @@ public interface IAudioCaptureSource : IDisposable
     int SampleRate { get; }
 
     /// <summary>
-    /// Source channel count before our mono down-mix. Reflects the device's
-    /// mix format (or, for process loopback, the synthetic format we
-    /// requested). Display-only — the engine's internal bus is mono.
+    /// Source channel count before our stereo fold. Reflects the device's mix
+    /// format (or, for process loopback, the synthetic format we requested).
+    /// Display-only — the engine's internal bus is always stereo.
     /// </summary>
     int SourceChannels { get; }
 
@@ -37,7 +38,11 @@ public interface IAudioCaptureSource : IDisposable
     /// </summary>
     int BitsPerSample { get; }
 
-    /// <summary>Mono float ring the source writes into; the mix thread reads from here.</summary>
+    /// <summary>
+    /// Ring of interleaved stereo floats (<c>L, R, L, R, …</c>) — 2 floats per
+    /// frame. The source's capture thread is the sole writer and only ever
+    /// writes whole frames; the mix thread is the sole reader.
+    /// </summary>
     RingBuffer Ring { get; }
 
     /// <summary>
@@ -48,13 +53,21 @@ public interface IAudioCaptureSource : IDisposable
     int BufferMilliseconds { get; }
 
     /// <summary>
-    /// Granted (or configured) period in mono frames at <see cref="SampleRate"/>.
+    /// Granted (or configured) period in frames at <see cref="SampleRate"/>.
     /// Low-latency devices report what the OS actually granted via
     /// <c>GetSharedModeEnginePeriod</c>; legacy devices approximate from
     /// <see cref="BufferMilliseconds"/>. Used by <see cref="MixEngine"/> to
     /// align its mix block size with the slowest device on the bus.
     /// </summary>
     int BufferFrames { get; }
+
+    /// <summary>
+    /// True once the stream has failed under us — the device was removed or
+    /// reconfigured, or the loopback broke. A faulted source delivers nothing
+    /// more; the device watcher re-opens or detaches it without rebuilding the
+    /// engine.
+    /// </summary>
+    bool IsFaulted { get; }
 
     /// <summary>
     /// Fired immediately after a fresh block is appended to <see cref="Ring"/>.

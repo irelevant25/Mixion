@@ -203,6 +203,29 @@ public sealed class JsonRpcDispatcher
     }
 
     /// <summary>
+    /// Serialize a server → client notification (no <c>id</c>, no response
+    /// expected). The SPA dispatches these by <paramref name="method"/> —
+    /// e.g. <c>stateChanged</c> and <c>hostShutdown</c>.
+    /// </summary>
+    public static string SerializeNotification(string method, object? @params)
+    {
+        using var ms = new MemoryStream(256);
+        using (var writer = new Utf8JsonWriter(ms))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("jsonrpc", "2.0");
+            writer.WriteString("method", method);
+            if (@params is not null)
+            {
+                writer.WritePropertyName("params");
+                JsonSerializer.Serialize(writer, @params, @params.GetType(), JsonOptions);
+            }
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+    }
+
+    /// <summary>
     /// Serialize an error envelope. <paramref name="id"/> may be null for
     /// errors that occurred before the id could be parsed (e.g. parse error).
     /// </summary>

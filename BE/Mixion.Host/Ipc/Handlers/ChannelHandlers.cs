@@ -6,12 +6,13 @@ namespace Mixion.Host.Ipc.Handlers;
 /// <summary>
 /// <c>setGain</c>, <c>setMute</c>, <c>setSolo</c> — per-channel control RPCs.
 ///
-/// State mutation rule (BE-036): we read the current <see cref="MixerState"/>
-/// via <see cref="Audio.MixEngine.SnapshotState"/>, build a new immutable
-/// record with the patched <see cref="Channel"/>, and publish it via
-/// <see cref="Audio.MixEngine.PublishState"/>. The mix loop picks it up on
-/// its next tick. <c>setGain</c> converts dB to linear once on state swap so
-/// the audio path never calls <see cref="Math.Pow"/>.
+/// State mutation rule (BE-036): every change goes through
+/// <see cref="Audio.MixEngine.UpdateState"/>, which derives the next immutable
+/// <see cref="MixerState"/> from the latest one under a control-plane lock and
+/// publishes it atomically — so a gain drag can't overwrite a change the device
+/// watcher published a moment earlier. The mix loop picks it up on its next
+/// tick. <c>setGain</c> converts dB to linear once on state swap so the audio
+/// path never calls <see cref="Math.Pow"/>.
 ///
 /// Channels live in two buses (input and output); since indices overlap, all
 /// three RPCs accept an optional <c>bus</c> ("input" | "output"). Defaults to
@@ -31,13 +32,11 @@ public static class ChannelHandlers
         {
             var p      = JsonRpcDispatcher.RequireParams<SetGainParams>(paramsEl);
             var engine = RequireEngine(host);
-            var state  = engine.SnapshotState();
             var bus    = ParseBus(p.Bus);
 
-            var next = ApplyChannelChange(state, bus, p.Channel,
-                ch => ch.WithGainDb(ClampDb(p.Db)));
+            engine.UpdateState(state => ApplyChannelChange(state, bus, p.Channel,
+                ch => ch.WithGainDb(ClampDb(p.Db))));
 
-            engine.PublishState(next);
             return Task.FromResult<object?>(new { ok = true });
         });
 
@@ -45,13 +44,11 @@ public static class ChannelHandlers
         {
             var p      = JsonRpcDispatcher.RequireParams<SetMuteParams>(paramsEl);
             var engine = RequireEngine(host);
-            var state  = engine.SnapshotState();
             var bus    = ParseBus(p.Bus);
 
-            var next = ApplyChannelChange(state, bus, p.Channel,
-                ch => ch with { Muted = p.Muted });
+            engine.UpdateState(state => ApplyChannelChange(state, bus, p.Channel,
+                ch => ch with { Muted = p.Muted }));
 
-            engine.PublishState(next);
             return Task.FromResult<object?>(new { ok = true });
         });
 
@@ -59,13 +56,11 @@ public static class ChannelHandlers
         {
             var p      = JsonRpcDispatcher.RequireParams<SetSoloParams>(paramsEl);
             var engine = RequireEngine(host);
-            var state  = engine.SnapshotState();
             var bus    = ParseBus(p.Bus);
 
-            var next = ApplyChannelChange(state, bus, p.Channel,
-                ch => ch with { Soloed = p.Soloed });
+            engine.UpdateState(state => ApplyChannelChange(state, bus, p.Channel,
+                ch => ch with { Soloed = p.Soloed }));
 
-            engine.PublishState(next);
             return Task.FromResult<object?>(new { ok = true });
         });
     }

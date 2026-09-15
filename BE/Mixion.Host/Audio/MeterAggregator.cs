@@ -11,8 +11,8 @@ namespace Mixion.Host.Audio;
 ///   • Producer (mix thread): <see cref="Accumulate"/> per block, then
 ///     <see cref="OnBlockComplete"/> once per tick. These touch private
 ///     audio-thread state only.
-///   • Consumer (telemetry thread): <see cref="TrySnapshot"/> reads the
-///     latest published per-channel pair atomically.
+///   • Consumer (telemetry thread): <see cref="ReadPairs"/> /
+///     <see cref="TrySnapshot"/> read the latest published pairs atomically.
 ///
 /// The publish step packs a (peak, rms) pair into a single 64-bit slot per
 /// channel and swaps it via <see cref="Interlocked.Exchange(ref long, long)"/>.
@@ -42,6 +42,9 @@ public sealed class MeterAggregator
 
     public int ChannelCount  { get; }
     public int WindowSamples => _windowSamples;
+
+    /// <summary>Id of the most recently published window. Monotonic.</summary>
+    public uint FrameId => (uint)Interlocked.Read(ref _frameId);
 
     public MeterAggregator(int channelCount, int sampleRate, int windowMs = 33)
     {
@@ -111,8 +114,31 @@ public sealed class MeterAggregator
     }
 
     /// <summary>
-    /// Telemetry thread: copy the latest published pairs into
-    /// <paramref name="dst"/> as <c>[peak0, rms0, peak1, rms1, …]</c>.
+    /// Telemetry thread: copy the latest published pairs for
+    /// <c>dst.Length / 2</c> consecutive channels, starting at
+    /// <paramref name="firstChannel"/>, into <paramref name="dst"/> as
+    /// <c>[peak, rms, peak, rms, …]</c>.
+    /// </summary>
+    public void ReadPairs(int firstChannel, Span<float> dst)
+    {
+        var count = dst.Length / 2;
+        if (firstChannel < 0 || firstChannel + count > ChannelCount)
+            throw new ArgumentOutOfRangeException(
+                nameof(firstChannel),
+                $"Channels [{firstChannel}, {firstChannel + count}) are outside the aggregator's {ChannelCount} channels.");
+
+        for (var c = 0; c < count; c++)
+        {
+            var packed = Interlocked.Read(ref _publishedPairs[firstChannel + c]);
+            UnpackPair(packed, out var peak, out var rms);
+            dst[c * 2]     = peak;
+            dst[c * 2 + 1] = rms;
+        }
+    }
+
+    /// <summary>
+    /// Telemetry thread: copy the latest published pairs for every channel
+    /// into <paramref name="dst"/> as <c>[peak0, rms0, peak1, rms1, …]</c>.
     /// Returns the current frame id.
     /// </summary>
     public uint TrySnapshot(Span<float> dst)
@@ -122,17 +148,11 @@ public sealed class MeterAggregator
                 $"Destination too small: need {ChannelCount * 2} floats, got {dst.Length}.",
                 nameof(dst));
 
-        for (var c = 0; c < ChannelCount; c++)
-        {
-            var packed = Interlocked.Read(ref _publishedPairs[c]);
-            UnpackPair(packed, out var peak, out var rms);
-            dst[c * 2]     = peak;
-            dst[c * 2 + 1] = rms;
-        }
+        ReadPairs(0, dst.Slice(0, ChannelCount * 2));
 
         // Frame id is monotonic; consumers care about ordering only, not
         // exact sync between channels and id, so a Volatile read is enough.
-        return (uint)Interlocked.Read(ref _frameId);
+        return FrameId;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -130,6 +130,24 @@ public sealed class RoutingMatrix : IEquatable<RoutingMatrix>
         return new RoutingMatrix(Inputs, Outputs, copy);
     }
 
+    /// <summary>
+    /// Copy with new dimensions. Cells inside both the old and the new bounds
+    /// keep their value; added rows and columns start unrouted. Channels are
+    /// only ever appended, so existing routes stay on their channels.
+    /// </summary>
+    public RoutingMatrix Resize(int inputs, int outputs)
+    {
+        if (inputs == Inputs && outputs == Outputs) return this;
+
+        var result = new RoutingMatrix(inputs, outputs);
+        var rows   = Math.Min(inputs, Inputs);
+        var cols   = Math.Min(outputs, Outputs);
+        for (var i = 0; i < rows; i++)
+            for (var o = 0; o < cols; o++)
+                result._cells[(i * outputs) + o] = _cells[(i * Outputs) + o];
+        return result;
+    }
+
     public bool Equals(RoutingMatrix? other)
     {
         if (other is null) return false;

@@ -18,6 +18,10 @@ namespace Mixion.Host.Audio.Dsp;
 ///   - <c>ReleaseMs</c>:  how fast the envelope moves toward "closed" once
 ///                          hold has elapsed.
 ///
+/// Stereo blocks go through <see cref="ProcessStereo"/>, which links the two
+/// sides: the louder side drives the detector and both sides get the same
+/// gain, so the stereo image can't wander while the gate moves.
+///
 /// No allocations on the audio path.
 /// </summary>
 public sealed class NoiseGate
@@ -73,7 +77,21 @@ public sealed class NoiseGate
         _rangeLin     = MathF.Pow(10f, rangeDb / 20f);
     }
 
-    public void Process(Span<float> samples)
+    /// <summary>Gate a mono block in place.</summary>
+    public void Process(Span<float> samples) => ProcessCore(samples, Span<float>.Empty);
+
+    /// <summary>
+    /// Gate a stereo pair in place with a linked detector — see the class
+    /// remarks. Both spans must be the same length.
+    /// </summary>
+    public void ProcessStereo(Span<float> left, Span<float> right)
+    {
+        if (right.Length != left.Length)
+            throw new ArgumentException("Stereo blocks must have the same length.", nameof(right));
+        ProcessCore(left, right);
+    }
+
+    private void ProcessCore(Span<float> left, Span<float> right)
     {
         if (!_enabled)
         {
@@ -85,16 +103,21 @@ public sealed class NoiseGate
             return;
         }
 
+        var stereo      = right.Length != 0;
         var envDb       = _envDb;
         var currentGain = _currentGain;
         var open        = _open;
         var hold        = _holdCounter;
 
-        for (var i = 0; i < samples.Length; i++)
+        for (var i = 0; i < left.Length; i++)
         {
-            var x = samples[i];
+            var absX = MathF.Abs(left[i]);
+            if (stereo)
+            {
+                var absR = MathF.Abs(right[i]);
+                if (absR > absX) absX = absR;
+            }
 
-            var absX = MathF.Abs(x);
             // Track the input level in dB with an instantaneous peak — the
             // gate's own attack/release smooths the *gain*, not the
             // detector, which keeps it responsive on sharp transients.
@@ -119,7 +142,8 @@ public sealed class NoiseGate
             var coeff      = targetGain > currentGain ? _attackCoeff : _releaseCoeff;
             currentGain   += (targetGain - currentGain) * coeff;
 
-            samples[i] = x * currentGain;
+            left[i] *= currentGain;
+            if (stereo) right[i] *= currentGain;
         }
 
         _envDb        = envDb;

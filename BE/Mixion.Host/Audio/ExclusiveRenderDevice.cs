@@ -30,7 +30,7 @@ public sealed class ExclusiveRenderDevice : IRenderDevice
     private readonly WasapiOut               _output;
     private readonly RingBuffer              _ring;
     private readonly RingBufferWaveProvider  _provider;
-    private IntPtr                           _mmcssHandle;
+    private volatile bool                    _faulted;
 
     public string Id           => _device.ID;
     public string FriendlyName => _device.FriendlyName;
@@ -47,6 +47,7 @@ public sealed class ExclusiveRenderDevice : IRenderDevice
     // interface symmetry. Settable to keep the contract uniform across
     // device classes.
     public string? ExclusiveFallbackReason { get; set; }
+    public bool   IsFaulted    => _faulted;
 
     /// <summary>
     /// HRESULT <c>AUDCLNT_E_DEVICE_IN_USE</c>. NAudio surfaces it as the
@@ -142,6 +143,14 @@ public sealed class ExclusiveRenderDevice : IRenderDevice
         _output    = output;
         _provider  = provider;
         LatencyMs  = latencyMs;
+
+        _output.PlaybackStopped += OnPlaybackStopped;
+    }
+
+    /// <summary>A stream that died under us stops with an exception; a plain <see cref="Stop"/> doesn't.</summary>
+    private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
+    {
+        if (e.Exception is not null) _faulted = true;
     }
 
     /// <summary>
@@ -179,22 +188,18 @@ public sealed class ExclusiveRenderDevice : IRenderDevice
         // exclusive format to accept 32-bit float.
     }
 
-    public void Start()
-    {
-        _output.Play();
-        _mmcssHandle = Mmcss.Begin();
-    }
+    // MMCSS is registered on NAudio's playback thread by RingBufferWaveProvider.
+    public void Start() => _output.Play();
 
     public void Stop()
     {
         try { _output.Stop(); } catch { /* device may have vanished */ }
-        Mmcss.Revert(_mmcssHandle);
-        _mmcssHandle = IntPtr.Zero;
     }
 
     public void Dispose()
     {
         Stop();
+        _output.PlaybackStopped -= OnPlaybackStopped;
         _output.Dispose();
         _device.Dispose();
     }

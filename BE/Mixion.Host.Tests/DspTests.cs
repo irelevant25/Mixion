@@ -358,6 +358,42 @@ public class DspTests
     }
 
     // --------------------------------------------------------------------
+    // Stereo linking — the engine runs gate and compressor on L/R pairs
+    // --------------------------------------------------------------------
+
+    [Fact]
+    public void Compressor_ProcessStereo_ReducesBothSidesEqually()
+    {
+        var comp = new Compressor(Fs);
+        comp.Apply(new CompressorState(true, ThresholdDb: -20f, Ratio: 8f, AttackMs: 0.1f, ReleaseMs: 50f, KneeDb: 0f, MakeupDb: 0f));
+
+        // Loud left, quiet right: a linked detector follows the loud side and
+        // applies the same reduction to both, so the image doesn't shift.
+        var left  = Sine(Block * 8, 1000f, amplitude: 0.9f);
+        var right = Sine(Block * 8, 1000f, amplitude: 0.09f);
+        comp.ProcessStereo(left, right);
+
+        var settled = Block * 4;
+        var ratio   = Peak(left.AsSpan(settled)) / Peak(right.AsSpan(settled));
+        Assert.InRange(ratio, 9.9f, 10.1f);
+        Assert.True(Peak(left.AsSpan(settled)) < 0.5f, "loud side should be compressed");
+        Assert.True(comp.GainReductionDb > 0f);
+    }
+
+    [Fact]
+    public void NoiseGate_ProcessStereo_StaysOpenWhileEitherSideIsLoud()
+    {
+        var gate = new NoiseGate(Fs);
+        gate.Apply(new GateState(true, ThresholdDb: -30f, AttackMs: 0.1f, HoldMs: 10f, ReleaseMs: 10f, RangeDb: -60f));
+
+        var left  = new float[Block * 4];                     // silent side
+        var right = Sine(Block * 4, 1000f, amplitude: 0.5f);  // loud side
+        gate.ProcessStereo(left, right);
+
+        Assert.InRange(Peak(right.AsSpan(Block * 2)), 0.49f, 0.51f);
+    }
+
+    // --------------------------------------------------------------------
     // Full chain wired through MixEngine.MixBlock + per-channel DSP shape
     // --------------------------------------------------------------------
 
@@ -420,7 +456,6 @@ public class DspTests
             renders.ToImmutableArray(),
             new RoutingMatrix(1, 1).With(0, 0, true));
 
-        var inputBlocksMono = new[] { new float[Block] };
         var inputBlocksL = new[] { new float[Block] };
         var inputBlocksR = new[] { new float[Block] };
         var outputBlocksL = new[] { new float[Block] };
@@ -428,23 +463,25 @@ public class DspTests
         var inGain  = new[] { 1f };
         var outGain = new[] { 1f };
 
-        var inputGate = new NoiseGate(Fs);
-        var inputEq   = new Equalizer(Fs);
-        var inputComp = new Compressor(Fs);
-        var outputEqL   = new Equalizer(Fs);
-        var outputEqR   = new Equalizer(Fs);
-        var outputCompL = new Compressor(Fs);
-        var outputCompR = new Compressor(Fs);
+        // The same stereo chain the engine runs: EQ per side, gate and
+        // compressor stereo-linked.
+        var inputGate  = new NoiseGate(Fs);
+        var inputEqL   = new Equalizer(Fs);
+        var inputEqR   = new Equalizer(Fs);
+        var inputComp  = new Compressor(Fs);
+        var outputEqL  = new Equalizer(Fs);
+        var outputEqR  = new Equalizer(Fs);
+        var outputComp = new Compressor(Fs);
 
         // Warm everything up — first calls JIT + lazy alloc the filters'
         // shadow buffers / coefficient arrays.
         inputGate.Apply(captures[0].Gate);
-        inputEq.Apply(captures[0].Eq);
+        inputEqL.Apply(captures[0].Eq);
+        inputEqR.Apply(captures[0].Eq);
         inputComp.Apply(captures[0].Compressor);
         outputEqL.Apply(renders[0].Eq);
         outputEqR.Apply(renders[0].Eq);
-        outputCompL.Apply(renders[0].Compressor);
-        outputCompR.Apply(renders[0].Compressor);
+        outputComp.Apply(renders[0].Compressor);
         for (var w = 0; w < 200; w++) RunTick();
 
         var before = GC.GetAllocatedBytesForCurrentThread();
@@ -455,24 +492,21 @@ public class DspTests
 
         void RunTick()
         {
-            for (var i = 0; i < Block; i++) inputBlocksMono[0][i] = 0.3f;
-            inputGate.Process(inputBlocksMono[0]);
-            inputEq.Process(inputBlocksMono[0]);
-            inputComp.Process(inputBlocksMono[0]);
-            // Centre pan for the smoke test → both sides see the mono signal at unity.
             for (var i = 0; i < Block; i++)
             {
-                var v = inputBlocksMono[0][i];
-                inputBlocksL[0][i] = v;
-                inputBlocksR[0][i] = v;
+                inputBlocksL[0][i] = 0.3f;
+                inputBlocksR[0][i] = -0.2f;
             }
+            inputGate.ProcessStereo(inputBlocksL[0], inputBlocksR[0]);
+            inputEqL.Process(inputBlocksL[0]);
+            inputEqR.Process(inputBlocksR[0]);
+            inputComp.ProcessStereo(inputBlocksL[0], inputBlocksR[0]);
             MixEngine.MixBlock(Block, state, inputBlocksL, inputBlocksR,
                 outputBlocksL, outputBlocksR,
                 inGain, outGain, MixEngine.GainRampCoefficient, MixEngine.RampSnapEpsilon);
             outputEqL.Process(outputBlocksL[0]);
             outputEqR.Process(outputBlocksR[0]);
-            outputCompL.Process(outputBlocksL[0]);
-            outputCompR.Process(outputBlocksR[0]);
+            outputComp.ProcessStereo(outputBlocksL[0], outputBlocksR[0]);
         }
     }
 

@@ -42,7 +42,7 @@ internal static class Program
         CrashLog.Write(
             "INFO",
             $"Host starting (pid {Environment.ProcessId}); raw args=[{string.Join(' ', args)}]; "
-            + $"parsed port={(cli.Port?.ToString() ?? "<random>")} noBrowser={cli.NoBrowser} "
+            + $"parsed port={(cli.Port?.ToString() ?? "<remembered or random>")} noBrowser={cli.NoBrowser} "
             + $"skipDriverCheck={cli.SkipDriverCheck}",
             null);
 
@@ -89,8 +89,13 @@ internal static class Program
         // embedded Angular bundle at /. Bound to 127.0.0.1 only.
         var builder = WebApplication.CreateBuilder(args);
 
+        // Reuse the previous run's port when it's free so an open UI tab keeps
+        // its origin across restarts; --port always wins.
+        var portFile   = PortPreference.DefaultFilePath();
+        var listenPort = PortPreference.ResolveListenPort(
+            cli.Port, PortPreference.Read(portFile), PortPreference.IsAvailable);
         builder.WebHost.ConfigureKestrel(k =>
-            HttpServer.ConfigureKestrel(k, new HostBindingOptions(cli.Port)));
+            HttpServer.ConfigureKestrel(k, new HostBindingOptions(listenPort == 0 ? null : listenPort)));
 
         builder.Logging.ClearProviders();
         builder.Logging.AddSimpleConsole(o =>
@@ -112,11 +117,21 @@ internal static class Program
         builder.Services.AddSingleton(provider => new AudioSettingsStore(
             AudioSettingsStore.DefaultFilePath(),
             provider.GetRequiredService<ILoggerFactory>().CreateLogger("AudioSettingsStore")));
+        builder.Services.AddSingleton<ProcessSuppressions>();
         builder.Services.AddSingleton(provider => new EngineFactory(
             provider.GetRequiredService<ILoggerFactory>().CreateLogger("MixEngine"),
-            provider.GetRequiredService<AudioSettingsStore>()));
-        // BE-106: watchdog rebinds process loopbacks when their PID dies.
-        builder.Services.AddHostedService<ProcessHealthMonitor>();
+            provider.GetRequiredService<AudioSettingsStore>(),
+            provider.GetRequiredService<ProcessSuppressions>()));
+        // Keeps channels bound to whatever Windows offers: apps re-attach by
+        // name when they restart, devices follow plug / unplug, new ones are
+        // attached — all in place, without rebuilding the engine.
+        builder.Services.AddSingleton(provider => new TopologyReconciler(
+            provider.GetRequiredService<EngineHost>(),
+            provider.GetRequiredService<EngineFactory>(),
+            provider.GetRequiredService<ProcessSuppressions>(),
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger("DeviceWatcher")));
+        builder.Services.AddSingleton<AudioDeviceWatcher>();
+        builder.Services.AddHostedService(provider => provider.GetRequiredService<AudioDeviceWatcher>());
         builder.Services.AddSingleton<CurrentPresetState>();
         builder.Services.AddSingleton(provider => new PresetStore(
             PresetStore.DefaultDirectory(),
@@ -130,11 +145,13 @@ internal static class Program
                 dispatcher,
                 provider.GetRequiredService<IEndpointSource>(),
                 provider.GetRequiredService<EngineHost>(),
-                provider.GetRequiredService<EngineFactory>());
+                provider.GetRequiredService<EngineFactory>(),
+                provider.GetRequiredService<ProcessSuppressions>());
             ProcessHandlers.Register(
                 dispatcher,
                 provider.GetRequiredService<EngineHost>(),
-                provider.GetRequiredService<EngineFactory>());
+                provider.GetRequiredService<EngineFactory>(),
+                provider.GetRequiredService<ProcessSuppressions>());
             StateHandlers.Register(dispatcher, provider.GetRequiredService<EngineHost>());
             RoutingHandlers.Register(dispatcher, provider.GetRequiredService<EngineHost>());
             ChannelHandlers.Register(dispatcher, provider.GetRequiredService<EngineHost>());
@@ -155,14 +172,24 @@ internal static class Program
             PresetHandlers.Register(
                 dispatcher,
                 provider.GetRequiredService<EngineHost>(),
+                provider.GetRequiredService<EngineFactory>(),
                 provider.GetRequiredService<PresetStore>(),
                 provider.GetRequiredService<CurrentPresetState>(),
-                provider.GetRequiredService<IEndpointSource>());
+                provider.GetRequiredService<IEndpointSource>(),
+                provider.GetRequiredService<ProcessSuppressions>(),
+                provider.GetRequiredService<AudioDeviceWatcher>());
             SystemHandlers.Register(dispatcher);
             return dispatcher;
         });
 
         var app = builder.Build();
+
+        var engineHost = app.Services.GetRequiredService<EngineHost>();
+        var hub        = app.Services.GetRequiredService<TelemetryHub>();
+        // Channel-set and availability changes (device watcher, rebuilds) are
+        // pushed to every open UI, so pickers and strips follow devices and
+        // apps coming and going without a refresh.
+        engineHost.TopologyChanged += state => hub.Broadcast("stateChanged", state.ToDto());
 
         app.UseWebSockets();
 
@@ -186,20 +213,21 @@ internal static class Program
         Console.WriteLine($"  Mixion → {url}");
         Console.WriteLine();
 
+        if (cli.Port is null)
+            PortPreference.Save(portFile, new Uri(url).Port);
+
         // Publish the URL so a second-instance launch can forward to it. (BE-090)
         instance.PublishUrl(url);
 
-        // Start the audio engine. Default mic → default output as a
-        // walking-skeleton passthrough (BE-011). Failures here don't take
-        // the host down — the UI can still talk to /api/*, the user just
-        // won't hear audio. Useful when running on a CI box without an
-        // audio device.
-        MixEngine? engine = null;
-        var engineHost = app.Services.GetRequiredService<EngineHost>();
+        // Start the audio engine: every active device plus a loopback for every
+        // app producing audio, all routes off. It goes through EngineHost like
+        // any rebuild, so a Rescan requested meanwhile can't race it. Failures
+        // here don't take the host down — the UI can still talk to /api/*, the
+        // user just won't hear audio.
         try
         {
-            engine = StartFullDeviceEngine(app.Services.GetRequiredService<EngineFactory>());
-            engineHost.Set(engine);
+            Task.Run(() => engineHost.RebuildAsync(app.Services.GetRequiredService<EngineFactory>()))
+                .GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
@@ -213,18 +241,44 @@ internal static class Program
         }
 
         // Auto-load the last preset the user worked with (BE-side persistence
-        // of "current setup"). If audio failed to come up there is no engine
-        // to apply state to — the FE will see no current preset and start
-        // from defaults.
-        if (engine is not null)
+        // of "current setup").
+        bool LoadLastPreset() => TryLoadLastPreset(
+            engineHost,
+            app.Services.GetRequiredService<EngineFactory>(),
+            app.Services.GetRequiredService<PresetStore>(),
+            app.Services.GetRequiredService<CurrentPresetState>(),
+            app.Services.GetRequiredService<IEndpointSource>(),
+            app.Services.GetRequiredService<ProcessSuppressions>(),
+            logger);
+
+        if (engineHost.Current is not null)
         {
-            TryLoadLastPreset(
-                engine,
-                app.Services.GetRequiredService<PresetStore>(),
-                app.Services.GetRequiredService<CurrentPresetState>(),
-                app.Services.GetRequiredService<IEndpointSource>(),
-                logger);
+            LoadLastPreset();
         }
+        else
+        {
+            // Audio didn't come up (e.g. Windows Audio not ready yet at logon).
+            // The device watcher keeps retrying; apply the preset to the first
+            // engine that does start, exactly once — then have open pages
+            // re-hydrate, since they loaded without it.
+            var presetPending = 1;
+            void OnFirstEngine(MixerState started)
+            {
+                if (Interlocked.Exchange(ref presetPending, 0) == 0) return;
+                engineHost.TopologyChanged -= OnFirstEngine;
+                _ = Task.Run(() =>
+                {
+                    if (LoadLastPreset()) hub.Broadcast("sessionChanged", null);
+                });
+            }
+            engineHost.TopologyChanged += OnFirstEngine;
+
+            // A recovery may have finished between the check above and subscribing.
+            if (engineHost.Current is { } running) OnFirstEngine(running.SnapshotState());
+        }
+
+        // Pages that loaded while the engine was starting have been waiting on this.
+        engineHost.CompleteStartup();
 
         if (!cli.NoBrowser)
             BrowserLauncher.Open(url);
@@ -274,16 +328,18 @@ internal static class Program
         if (!lifetime.ApplicationStopping.IsCancellationRequested)
             lifetime.StopApplication();
 
+        // Stopping the lifetime also tells every open UI the host is exiting
+        // (WebSocketEndpoint), so their tabs close instead of reconnecting.
         Task.Run(() => app.WaitForShutdownAsync()).GetAwaiter().GetResult();
 
         // Order matters per BE-092: Kestrel has stopped accepting new
-        // connections by the time WaitForShutdownAsync returns; now tear
-        // down the engine in render → mix → capture order so the last
-        // ~100 ms of audio drains cleanly. MixEngine.Stop() already does
-        // exactly that — render first, then the mix loop join, then capture.
+        // connections and the device watcher has stopped by the time
+        // WaitForShutdownAsync returns; now tear down the engine in render →
+        // mix → capture order so the last ~100 ms of audio drains cleanly.
+        // ShutdownAsync waits for a rebuild still in flight and refuses new
+        // ones, so no engine is left running behind our back.
         logger.LogInformation("Shutdown: stopping audio engine.");
-        engineHost.Set(null);
-        engine?.Dispose();
+        Task.Run(() => engineHost.ShutdownAsync(TimeSpan.FromSeconds(10))).GetAwaiter().GetResult();
         CrashLog.Write("INFO", "Host stopped cleanly.", null);
         return 0;
     }
@@ -292,22 +348,25 @@ internal static class Program
     /// Apply the user's most recently used preset (if any) on top of the
     /// freshly-started engine. Failures are logged but non-fatal — the user
     /// gets the empty default state, exactly the v1 startup behaviour.
+    /// Returns true when a preset was applied.
     /// </summary>
-    private static void TryLoadLastPreset(
-        MixEngine engine,
-        PresetStore store,
-        CurrentPresetState currentPreset,
-        IEndpointSource endpoints,
-        ILogger logger)
+    private static bool TryLoadLastPreset(
+        EngineHost          host,
+        EngineFactory       factory,
+        PresetStore         store,
+        CurrentPresetState  currentPreset,
+        IEndpointSource     endpoints,
+        ProcessSuppressions suppressions,
+        ILogger             logger)
     {
         var name = store.GetLastPresetName();
-        if (string.IsNullOrEmpty(name)) return;
+        if (string.IsNullOrEmpty(name)) return false;
 
         try
         {
             var preset = store.Load(name);
-            var result = store.Apply(preset, engine.SnapshotState(), endpoints);
-            engine.PublishState(result.NextState);
+            var result = Task.Run(() => PresetHandlers.ApplyPresetAsync(host, factory, store, suppressions, preset, endpoints))
+                .GetAwaiter().GetResult();
             currentPreset.Set(name, result.InputSlots, result.OutputSlots);
 
             logger.LogInformation("Auto-loaded last preset '{Name}'", name);
@@ -317,29 +376,19 @@ internal static class Program
                     "Preset '{Name}' references {Count} device(s) not currently present.",
                     name, result.MissingDevices.Count);
             }
+            return true;
         }
         catch (FileNotFoundException)
         {
             logger.LogInformation("Last preset '{Name}' no longer exists; clearing pointer.", name);
             store.ClearLastPresetName();
+            return false;
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Could not auto-load last preset '{Name}'", name);
+            return false;
         }
-    }
-
-    /// <summary>
-    /// Open every active capture and render endpoint Windows reports — one
-    /// strip per device, just like Sound settings — plus a per-process
-    /// loopback for every audio-producing process, and start the mix engine
-    /// with all routes off. Delegates to <see cref="EngineFactory"/> so the
-    /// runtime <c>refreshDevices</c> RPC can rebuild the engine via the same
-    /// path with previous state preserved.
-    /// </summary>
-    private static MixEngine StartFullDeviceEngine(EngineFactory factory)
-    {
-        return factory.Build(previousState: null).Engine;
     }
 
 }

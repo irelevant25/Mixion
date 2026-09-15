@@ -19,18 +19,25 @@ BE/
 │   │   ├── StaticFiles.cs            # ManifestEmbeddedFileProvider wiring + SPA fallback to /index.html
 │   │   ├── SessionEndpoint.cs        # GET /api/session — returns {token, csrf, mixerStateInit}
 │   │   ├── HealthEndpoint.cs         # GET /api/health — diagnostics
-│   │   └── WebSocketEndpoint.cs      # GET /ws — upgrade, validate token, hand off to dispatcher
+│   │   ├── PortPreference.cs         # remembers the last listen port so the UI keeps its origin across restarts
+│   │   └── WebSocketEndpoint.cs      # GET /ws — upgrade, validate token, dispatch; hostShutdown + close 1001 on exit
 │   ├── Audio/
 │   │   ├── DeviceEnumerator.cs       # WASAPI endpoint discovery
 │   │   ├── DriverProbe.cs            # detects basic single-cable VB-CABLE among WASAPI endpoints
 │   │   ├── IAudioCaptureSource.cs    # common shape every input source feeds the engine through
-│   │   ├── CaptureDevice.cs          # WasapiCapture wrapper, format-converts to internal float mono
-│   │   ├── ProcessLoopbackCapture.cs # per-process loopback (Win10 20348+/Win11) — capture Chrome/Spotify/etc. directly
-│   │   ├── AudioProcessEnumerator.cs # walks IAudioSessionManager2 to list audio-producing processes
-│   │   ├── EngineFactory.cs          # builds a MixEngine from current device + process state; reused by startup AND runtime refresh
-│   │   ├── ProcessHealthMonitor.cs   # background watchdog: rebuilds engine when a tracked process loopback PID dies (auto-rebind by name)
+│   │   ├── CaptureDevice.cs          # WasapiCapture wrapper, format-converts to internal float stereo
+│   │   ├── WaveFormatX.cs            # native sample formats → interleaved stereo float
+│   │   ├── ProcessLoopbackCapture.cs # per-process loopback (Win10 20348+/Win11) on an app's root process tree
+│   │   ├── ProcessChannelId.cs       # `process:<name>` channel-id scheme
+│   │   ├── ProcessSnapshot.cs        # Toolhelp32 process table: names, parents, app root processes
+│   │   ├── AudioProcessEnumerator.cs # raw-COM walk of IAudioSessionManager2 → apps producing audio
+│   │   ├── EngineFactory.cs          # builds a MixEngine from current devices + apps; opens single sources for in-place attach
+│   │   ├── AudioDeviceWatcher.cs     # background service: device notifications + 1 s app poll → reconcile
+│   │   ├── TopologyPlanner.cs        # pure rules: which slots to re-bind, detach or add
+│   │   ├── TopologyReconciler.cs     # applies a plan to the running engine without a rebuild
+│   │   ├── ProcessSuppressions.cs    # apps the user detached this session
 │   │   ├── RenderDevice.cs           # WasapiOut wrapper, reads from output ring buffer
-│   │   ├── MixEngine.cs              # the heart: read state, mix, write — capture/render arrays nullable to support missing-device slots
+│   │   ├── MixEngine.cs              # the heart: read state, mix, write — slots with spare capacity, hot swap / append
 │   │   ├── RoutingMatrix.cs          # bool[inputs, outputs] + solo/mute logic
 │   │   ├── MeterAggregator.cs        # peak + RMS over ~33 ms window
 │   │   ├── RingBuffer.cs             # SPSC lock-free float ring buffer
@@ -143,58 +150,58 @@ dotnet watch run -- --port 54812 --no-browser
 | Flag | Behavior |
 |---|---|
 | *(none)* | Normal run |
-| `--port <N>` | Bind to a specific port instead of a random free one. Useful for bookmarking. |
+| `--port <N>` | Bind to a specific port. Without it the host reuses its previous run's port (`%LOCALAPPDATA%\Mixion\host-port.txt`) when free, otherwise a random free one. |
 | `--no-browser` | Don't auto-open the default browser. |
 | `--no-driver-check` | Skip the VB-CABLE probe (development convenience; not exposed in packaged builds). |
 
 ---
 
-## Engine rebuild coordination
+## Engine topology coordination
 
-Every engine teardown/rebuild — user Refresh, `removeProcessLoopback`, or the auto-rebind watchdog — funnels through [`EngineHost.RebuildAsync`](Mixion.Host/Ipc/EngineHost.cs). A `SemaphoreSlim` serialises concurrent calls so two rebuilds can't race for the same WASAPI endpoints. The method snapshots current state, optionally transforms it (e.g. drop a removed channel), disposes the running engine, calls `EngineFactory.Build(seed)`, then publishes the new engine atomically.
+Every change to which devices and apps are bound goes through [`EngineHost`](Mixion.Host/Ipc/EngineHost.cs), serialised by one semaphore so two changes never race for the same WASAPI endpoints or slot indices:
 
-Two flavours:
+- **In place** — `ChangeTopologyAsync`, used by the device watcher and preset loads. [`MixEngine`](Mixion.Host/Audio/MixEngine.cs) is allocated with spare slots (`SpareInputSlots` / `SpareOutputSlots`), so a source can be swapped behind an existing channel (`ReplaceCapture` / `ReplaceRender`) or a new channel attached (`TryAppendCapture` / `TryAppendRender`) while audio flows. Nothing else is re-opened and there is no gap.
+- **Full rebuild** — `RebuildAsync` snapshots state, optionally transforms it (e.g. drop a removed channel), disposes the running engine and builds a new one via `EngineFactory.Build(seed)`. Used for the startup build, Rescan (`refreshDevices`), audio-settings changes, `removeProcessLoopback`, and as a fallback when the spare slots run out. Expect a ~200 ms audible gap. Shutdown goes through the same lock (`ShutdownAsync`), so a rebuild still in flight can't leave an engine running.
 
-- **Auto-discover ON** (default): `EngineFactory.Build` enumerates audio processes and appends any that aren't already in the seed state. This is what Refresh uses — apps started after the host launched show up.
-- **Auto-discover OFF**: orphan PLCs are opened-then-disposed (so we don't leak handles) and only seed-state channels survive. This is what `removeProcessLoopback` uses to keep the just-removed channel from immediately re-appearing via enumeration.
+`EngineHost.TopologyChanged` fires after either path; `Program` forwards it to every UI as a `stateChanged` notification. Channel settings (gain, mute, routing, DSP) change through `MixEngine.UpdateState(s => …)`, which serialises writers so RPC handlers and the device watcher can't overwrite each other.
 
 ## Per-process loopback management (BE-105)
 
-Beyond bulk Refresh, two targeted RPCs let the FE manage individual process loopbacks:
-
 | RPC | Purpose |
 |---|---|
-| `listAudioProcesses` | Read-only enumeration of currently-audio-producing processes. Returns `{processes: [{channelId, processId, processName, executablePath}]}`. The FE uses it to populate an "Add app" sub-picker without paying engine-rebuild cost just to peek at what's available. `channelId` matches the id format `process:<name>` so the FE can dedupe against `MixerState.Inputs`. |
-| `removeProcessLoopback` | Drop a single process-loopback channel from `MixerState` and rebuild the engine without re-discovering it (auto-discover OFF). Idempotent — calling with an unknown id returns the unchanged state. Returns the new `MixerStateDto`. |
+| `listAudioProcesses` | Read-only enumeration of apps with an audio session. Returns `{processes: [{channelId, processId, processName, executablePath}]}` — one entry per app name, `processId` being the app's root process. `channelId` matches the `process:<name>` format so the FE can dedupe against `MixerState.Inputs`. |
+| `removeProcessLoopback` | Drop a single app channel from `MixerState` and rebuild the engine without it. The app is added to `ProcessSuppressions`, so the device watcher doesn't attach it again for the rest of the session (a Rescan, or loading a preset that uses the app, lifts that). Idempotent. Returns the new `MixerStateDto`. |
 
-There is intentionally no dedicated `addProcessLoopback` — `refreshDevices` already opens loopbacks for every audio-producing process, including newly launched ones. A separate add RPC would do the same engine-rebuild work without adding value over the broader refresh, so we keep the API surface lean.
+There is no `addProcessLoopback`: the device watcher attaches every app that opens an audio session on its own.
 
-**Caveat — there's still a brief audio gap (~200 ms)** during any rebuild while WASAPI re-opens. The "atomic capture-array swap" path described in the original BE-105 spec is BE-110 *(future)* — that requires per-channel state arrays sized to a max capacity at construction so add/remove can mutate without reallocation. The current implementation trades that complexity for a small gap that's acceptable for explicit user actions.
+## Automatic device & app tracking (BE-106 → BE-111)
 
-## Auto-rebind on PID change (BE-106)
+[`AudioDeviceWatcher`](Mixion.Host/Audio/AudioDeviceWatcher.cs) is a background service that keeps the engine bound to whatever Windows offers, without a Refresh:
 
-[`ProcessHealthMonitor`](Mixion.Host/Audio/ProcessHealthMonitor.cs) is an `IHostedService` that ticks every 3 seconds. It walks the active engine's captures, checks each `ProcessLoopbackCapture`'s PID against `Process.GetProcessById`, and if any has exited, calls `EngineHost.RebuildAsync` with no transform (auto-discover ON).
+- **Every second** it takes a Toolhelp32 process snapshot ([`ProcessSnapshot`](Mixion.Host/Audio/ProcessSnapshot.cs)) and the list of apps with audio sessions ([`AudioProcessEnumerator`](Mixion.Host/Audio/AudioProcessEnumerator.cs) — raw COM, because NAudio's session manager registers a callback per construction and can't be polled).
+- **After device notifications** (`IMMNotificationClient`: added, removed, state or format changed; 400 ms settle) and **every 15 s** as a safety net it also scans the active endpoints.
 
-Because `ProcessLoopbackCapture.Id` is `process:<name>` (not PID-bound), `EngineFactory.Build` resolves the channel against the new enumeration by name — Chrome closes and reopens, the new PID's PLC slots into the same channel id, and the user's slot binding survives unchanged. Total perceived delay: ~3 s of "channel red" before it goes green again. No user action required.
+[`TopologyPlanner`](Mixion.Host/Audio/TopologyPlanner.cs) turns the snapshot into a plan (pure, unit-tested) and [`TopologyReconciler`](Mixion.Host/Audio/TopologyReconciler.cs) applies it in place:
 
-The watchdog never crashes the host — exceptions in the loop log a warning and continue. The watchdog is a no-op when `EngineHost.Current` is null (engine not yet started or in the middle of a rebuild).
+- **Apps** are one channel per executable name. The loopback targets the app's *root* process (the top of its same-name process tree) in include-tree mode, so multi-process apps such as Chrome — whose audio comes from a helper process Chrome recycles — are captured whole. When the root exits the channel is detached (red strip, settings kept); as soon as the app runs again — preferring an instance with an audio session — it is re-attached, typically within a second. A healthy binding only moves when its instance never played audio while another instance does. Trees that contain the Mixion host (e.g. Explorer when Mixion was started from it) are never captured, since that would feed Mixion's output back into itself.
+- **Devices** are re-attached when their endpoint id is active again at the engine sample rate, re-opened when their stream faulted (`IsFaulted`: device invalidated, format changed), detached when they disappear, and appended when new.
+- Targets that fail to open back off (10 s, doubling up to 10 min; a device notification resets devices) and only the first failure logs a warning.
+- The mix loop mixes a capture that delivered nothing for ~50 ms (`StarvedSourceTimeoutMs`; longer for sources that normally deliver in bigger bursts, such as some Bluetooth devices) as silence and drops what the other channels buffered while it waited, so a dead source costs a brief dropout instead of stalling the other channels or adding latency while the watcher catches up.
+
+Passes never crash the host — a failing pass logs a warning and the next one retries. If a rebuild fails and leaves no engine, the watcher rebuilds it from the last known state: right after a device change, otherwise backing off from 10 s to 10 min.
 
 ---
 
-## Runtime device refresh
+## Manual rescan (last resort)
 
-Devices and audio-producing processes can come and go after the host starts (user plugs in a USB mic, launches VLC, etc.). Restarting the host is heavy-handed; the FE can drive a runtime refresh instead.
+**RPC**: `refreshDevices` (no params) — the "Rescan" link at the bottom of the slot picker. The handler in [`Ipc/Handlers/DeviceHandlers.cs`](Mixion.Host/Ipc/Handlers/DeviceHandlers.cs) clears `ProcessSuppressions` and rebuilds the engine through `EngineHost.RebuildAsync` / [`EngineFactory.Build(previousState)`](Mixion.Host/Audio/EngineFactory.cs), with a brief audio gap (~100–300 ms) while WASAPI re-opens. Returns the new `MixerStateDto`. With the device watcher running it should rarely be needed.
 
-**RPC**: `refreshDevices` (no params). Returns the new `MixerStateDto`. The handler in [`Ipc/Handlers/DeviceHandlers.cs`](Mixion.Host/Ipc/Handlers/DeviceHandlers.cs) snapshots the current state, disposes the running engine, calls [`EngineFactory.Build(previousState)`](Mixion.Host/Audio/EngineFactory.cs) to construct a new one, and publishes it through `EngineHost`. There's a brief audio gap (~100–300 ms) while WASAPI re-opens — acceptable for a user-driven action.
-
-**Channel-identity discipline**:
+**Channel-identity discipline** (shared by rebuilds and the watcher):
 
 - Physical devices use the WASAPI `MMDevice.ID` (a stable GUID-ish string).
-- Process loopbacks use `process:<name>` — survives the target process being restarted (Chrome closes & reopens, the channel id stays the same).
-- A channel id present in the previous state but no longer enumerable stays in the new state with `Available = false` and a `null` backing source. The mix engine treats null capture/render slots as silent (input) or discard (output); the FE renders the strip in red so the user knows audio isn't flowing without losing their gain/mute/EQ/route settings.
-- Brand-new devices and processes are appended after the preserved channels. The routing matrix grows with `false` in the new positions, leaving existing routes untouched.
-
-**Engine null-tolerance**: [`MixEngine`](Mixion.Host/Audio/MixEngine.cs) takes `IAudioCaptureSource?[]` and `RenderDevice?[]`. The hot path checks for null per slot — silent input, no-op render. The single-source-of-truth `MixerState` still drives everything; missing channels just don't have a backing device this tick.
+- Apps use `process:<name>` ([`ProcessChannelId`](Mixion.Host/Audio/ProcessChannelId.cs)), matched case-insensitively — the channel survives the app restarting under a new PID.
+- A channel id no longer present stays in state with `Available = false` and a `null` backing source. The mix engine treats null capture/render slots as silent (input) or discard (output); the FE renders the strip in red so the user knows audio isn't flowing without losing their gain/mute/EQ/route settings.
+- New devices and apps are appended after the existing channels. The routing matrix grows with `false` in the new positions, leaving existing routes untouched.
 
 ---
 
@@ -206,15 +213,14 @@ Beyond physical mics and virtual cables, the engine can pull audio **directly fr
 
 **Lifecycle**:
 
-1. At startup, [`AudioProcessEnumerator`](Mixion.Host/Audio/AudioProcessEnumerator.cs) walks every active render endpoint's `IAudioSessionManager2`, dedupes the resulting sessions by PID (system PID 0 and the host's own PID are filtered out), and resolves each PID to a process name via `Process.GetProcessById`.
-2. `Program.OpenProcessLoopbacks` opens a `ProcessLoopbackCapture` per process and adds it to the engine's capture list with a friendly name like `"chrome (app)"`. The channel id format is `process:<pid>:<name>`.
+1. [`AudioProcessEnumerator`](Mixion.Host/Audio/AudioProcessEnumerator.cs) walks every active render endpoint's `IAudioSessionManager2`, drops the system-sounds session and anything in the host's own process tree, and resolves each session's process to its name and app root via a [`ProcessSnapshot`](Mixion.Host/Audio/ProcessSnapshot.cs).
+2. [`EngineFactory`](Mixion.Host/Audio/EngineFactory.cs) (startup, rebuilds) or the device watcher (at runtime) opens a `ProcessLoopbackCapture` on the root process, with a friendly name like `"chrome (app)"` and channel id `process:chrome`.
 3. Loopbacks are first-class `IAudioCaptureSource` instances — they appear in `MixerState.Inputs` next to physical captures and the FE wires them through the existing slot-config dialog, no extra UI required.
 
-**Limitations** (worth surfacing to the FE later):
+**Limitations**:
 
-- **PID is bound at startup.** If the user closes Chrome and reopens it, the new Chrome gets a different PID and the existing capture goes silent. The host has to be restarted to pick up the new PID. A future revision can re-resolve by process name when the stream errors and rebuild the engine without a full restart.
+- **One channel per executable name.** Different apps that share an executable name (for example several apps hosting `msedgewebview2`) share one channel, bound to one of their process trees.
 - **DRM-protected streams refuse loopback.** Some Spotify Premium / Netflix configurations prevent any process from capturing their output — the same hard limit a virtual cable would hit.
-- **Process must be alive at startup** to be enumerated. Apps launched after the host won't appear until the host is restarted.
 
 ---
 
@@ -222,13 +228,14 @@ Beyond physical mics and virtual cables, the engine can pull audio **directly fr
 
 | Thread | Owner | Mutate `MixerState`? | Allocate? |
 |---|---|---|---|
-| WASAPI capture (one per input) | NAudio | ❌ read-only | ❌ |
+| WASAPI capture (one per input) | NAudio / capture classes | ❌ | ❌ |
 | Mix thread (single) | `MixEngine` | ❌ read-only via `Volatile.Read` | ❌ |
-| WASAPI render (one per output) | NAudio | ❌ read-only | ❌ |
-| Telemetry (single) | `MeterAggregator` | ❌ read-only | only the binary frame buffer (pre-allocated) |
-| Kestrel request thread | ASP.NET Core | ✅ via `Interlocked.Exchange` of the whole record | ✅ off the audio path |
+| WASAPI render (one per output) | NAudio / render classes | ❌ | ❌ |
+| Telemetry (single) | `TelemetryBroadcaster` | ❌ read-only | only the binary frame buffer (reused) |
+| Kestrel request thread | ASP.NET Core | ✅ via `MixEngine.UpdateState` | ✅ off the audio path |
+| Device watcher (thread pool) | `AudioDeviceWatcher` | ✅ via `EngineHost.ChangeTopologyAsync` + `UpdateState` | ✅ off the audio path |
 
-Locks on the audio path are forbidden. State updates from RPCs swap the entire `MixerState` reference atomically.
+Locks on the audio path are forbidden. `UpdateState` serialises writers with a control-plane lock and swaps the entire `MixerState` reference; the mix thread never takes that lock. Every capture and render ring carries interleaved stereo floats and is strictly single-producer / single-consumer.
 
 ---
 
@@ -255,6 +262,8 @@ The host exposes a tiny HTTP API plus the Angular SPA:
 ```
 
 The token is held in memory; it changes on every host restart. The SPA stores it in memory only — never in `localStorage`.
+
+Kestrel serves requests before the audio engine is up, so `/api/session` and the `getState` RPC wait (at most 15 s) until the engine has started and the last preset is applied — a page that loads early doesn't render an empty mixer. `index.html` is served with `Cache-Control: no-cache` because the host reuses its port across restarts.
 
 ---
 
@@ -370,8 +379,12 @@ Per-process WASAPI loopback so the user can route Chrome / Spotify / OBS / a gam
 | BE-108 | `Channel.Available` flag (defaults `true`). Engine accepts nullable `IAudioCaptureSource?[]` / `RenderDevice?[]` and treats null slots as silent input / discard output. Sample-rate validation skips null slots | `State/MixerState.cs`, `Audio/MixEngine.cs`, `Ipc/StateDto.cs` | A slot whose device disappeared still has its gain/mute/EQ/route preserved; mix loop runs at the same allocation cost |
 | BE-109 | Stable process-loopback ids: switch from `process:<pid>:<name>` to `process:<name>` so a Chrome close/reopen keeps the same channel id. Dedupe at enumeration time when multiple PIDs share a name | `Audio/ProcessLoopbackCapture.cs`, `Audio/EngineFactory.cs` | Slot bound to "chrome" survives a Chrome restart through one Refresh click |
 | BE-105 | `listAudioProcesses` + `removeProcessLoopback` RPCs in a new `ProcessHandlers.cs`. Both go through `EngineHost.RebuildAsync` with auto-discover off for remove, so the just-removed channel doesn't re-appear via enumeration. `addProcessLoopback` deliberately omitted — refresh already covers it | `Ipc/Handlers/ProcessHandlers.cs`, `Ipc/EngineHost.cs`, `Audio/EngineFactory.cs` | FE picker shows currently-audio-producing apps; "×" detach button on process channels removes them and the channel is gone after rebuild |
-| BE-106 | `ProcessHealthMonitor` IHostedService polls every 3 s; on a dead PID, calls `EngineHost.RebuildAsync` (auto-discover on) so `EngineFactory` re-resolves the channel id `process:<name>` against the new PID. Channel + slot binding survive across the restart | `Audio/ProcessHealthMonitor.cs`, `Program.cs` | Close Chrome, reopen Chrome — within ~3-5 s the channel is back to green, slot binding intact, no Refresh click |
-| BE-110 *(future)* | True atomic capture-array swap: pre-allocate per-channel state arrays at construction to a max capacity, support add/remove via single-element writes + `MixerState` swap. Eliminates the ~200 ms WASAPI re-open gap on every rebuild | `Audio/MixEngine.cs`, `Ipc/EngineHost.cs` | Refresh / add / remove cause no audible silence; only physical-device hot-plug needs full re-open |
+| BE-106 *(superseded by BE-111)* | `ProcessHealthMonitor` IHostedService polls every 3 s; on a dead PID, calls `EngineHost.RebuildAsync` (auto-discover on) so `EngineFactory` re-resolves the channel id `process:<name>` against the new PID. Channel + slot binding survive across the restart | `Audio/ProcessHealthMonitor.cs`, `Program.cs` | Close Chrome, reopen Chrome — within ~3-5 s the channel is back to green, slot binding intact, no Refresh click |
+| BE-110 | In-place topology changes: `MixEngine` slots with spare capacity (`ReplaceCapture` / `TryAppendCapture` and render counterparts), `EngineHost.ChangeTopologyAsync`, serialised `MixEngine.UpdateState`. Background attach / detach / re-attach no longer rebuilds the engine | `Audio/MixEngine.cs`, `Ipc/EngineHost.cs` | Chrome closing and reopening or a headset being plugged in causes no gap on other channels; Rescan, settings changes and removing an app still rebuild |
+| BE-111 | `AudioDeviceWatcher` + `TopologyPlanner` + `TopologyReconciler` replace the PID watchdog: apps bound by name on their root process tree, devices followed via `IMMNotificationClient`, faulted streams re-opened, failed opens back off, host's own process tree never captured; `stateChanged` pushed to every UI | `Audio/AudioDeviceWatcher.cs`, `Audio/TopologyPlanner.cs`, `Audio/TopologyReconciler.cs`, `Audio/ProcessSnapshot.cs`, `Audio/AudioProcessEnumerator.cs` | Close and reopen Chrome: its strip turns red, then back within ~1–2 s, no Refresh |
+| BE-112 | Stereo end to end: captures fold to interleaved stereo rings (`WaveFormatX.ConvertToStereo`), per-side EQ, stereo-linked gate/compressor, balance pan on inputs, per-side input meters | `Audio/WaveFormatX.cs`, capture classes, `Audio/MixEngine.cs`, `Audio/Dsp/*` | Audio panned hard left moves only the left meter and stays on the left output |
+| BE-113 | Starved-source guard: a capture silent for ~50 ms (twice its learned delivery rhythm for bursty sources) is mixed as silence instead of stalling every channel; after a stall each ring is trimmed to what the sources' rhythms explain | `Audio/MixEngine.cs` | Killing an app mid-playback costs other channels a brief dropout and no lasting latency |
+| BE-114 | Presets persist slot channel ids; a slot whose channel is absent at load gets an unavailable placeholder channel that the watcher attaches later | `State/Preset.cs`, `State/PresetStore.cs`, `Ipc/Handlers/PresetHandlers.cs` | A preset with a Chrome slot loads with Chrome closed, keeps the slot, and re-attaches when Chrome starts |
 
 ### M8 — Polish
 
@@ -383,6 +396,8 @@ Per-process WASAPI loopback so the user can route Chrome / Spotify / OBS / a gam
 | BE-093 | `Properties/PublishProfiles/win-x64-portable.pubxml` + `win-x64-minimal.pubxml` | `Mixion.Host.csproj` | `dotnet publish -p:PublishProfile=...` produces a single .exe |
 | BE-094 | `ping()` RPC for the UI to detect liveness | `Ipc/Handlers/SystemHandlers.cs` | UI gets a response in <50 ms |
 | BE-095 | Wire `wwwroot` embedding: `<EmbeddedResource Include="wwwroot\**\*" />` and `<GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>` | `Mixion.Host.csproj` | Published .exe contains Angular files; no `wwwroot/` folder beside the .exe at runtime |
+| BE-096 | On shutdown every WebSocket gets a `hostShutdown` notification, then close 1001 `host-shutdown`, so the SPA closes its tab and Kestrel's graceful stop doesn't wait on open sockets | `Web/WebSocketEndpoint.cs` | Tray Exit closes the browser tab; the host exits within a second or two |
+| BE-097 | Remember the last listen port (`host-port.txt`) and prefer it on launch; `index.html` served no-cache; `/api/session` + `getState` wait for engine startup | `Web/PortPreference.cs`, `Web/StaticFiles.cs`, `Ipc/EngineHost.cs` | Restarting Mixion reuses the port; a page loaded during startup shows the full mixer |
 
 ---
 
@@ -432,10 +447,25 @@ All control over JSON-RPC 2.0 on `/ws`. Telemetry over binary frames on the same
 → {"jsonrpc":"2.0","id":15,"method":"removeEqBand","params":{"channel":1,"bandId":"<id>"}}
 ```
 
-Binary telemetry frame layout (little-endian):
+Binary telemetry frame layout (little-endian), see [`TelemetryFrame`](Mixion.Host/Ipc/TelemetryFrame.cs):
 
 ```
-[u32 frameId][u32 channelCount][float32 peak0][float32 rms0][float32 peak1][float32 rms1]...
+[u8 'M'][u8 pad ×3][u32 frameId][u32 sideCount][float32 peak0][float32 rms0][float32 peak1][float32 rms1]...
+```
+
+One (peak, RMS) pair per meter side, in the order `in0 L, in0 R, in1 L, …, out0 L, out0 R, …`. Spectrum frames start with `'S'` instead.
+
+Server → client notifications (JSON-RPC, no `id`):
+
+```jsonc
+// channel set or availability changed (app restarted, device plugged in) or the engine was rebuilt
+← {"jsonrpc":"2.0","method":"stateChanged","params":{"inputs":[...],"outputs":[...],"matrix":[[...]]}}
+
+// the host applied the last preset after pages loaded (the audio engine started late) — re-read /api/session
+← {"jsonrpc":"2.0","method":"sessionChanged"}
+
+// the host is exiting; the socket is closed right after with status 1001, reason "host-shutdown"
+← {"jsonrpc":"2.0","method":"hostShutdown"}
 ```
 
 ---

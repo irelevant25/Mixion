@@ -1,108 +1,211 @@
-using System.Diagnostics;
-using NAudio.CoreAudioApi;
+using System.Runtime.InteropServices;
+using static Mixion.Host.Audio.LowLatencyComInterop;
 
 namespace Mixion.Host.Audio;
 
 /// <summary>
-/// One running process that currently has at least one active WASAPI audio
-/// session on a render endpoint. The PID is what
-/// <see cref="ProcessLoopbackCapture"/> binds against; the friendly name is
-/// what the FE shows in the input picker.
+/// An app that currently owns at least one WASAPI audio session on a render
+/// endpoint. <see cref="SessionProcessId"/> is the process that opened the
+/// session; <see cref="RootProcessId"/> is the top of that app's same-name
+/// process tree — what <see cref="ProcessLoopbackCapture"/> binds to so
+/// multi-process apps are captured whole.
 /// </summary>
-public sealed record AudioProcess(int ProcessId, string ProcessName, string? ExecutablePath);
+public sealed record AudioProcess(int SessionProcessId, int RootProcessId, string ProcessName);
 
 /// <summary>
-/// Walks every active render endpoint, asks each for its
-/// <c>IAudioSessionManager2</c>, and dedupes the resulting sessions by PID. The
-/// idea is "what's currently making sound on this PC" — those are the
-/// candidates for per-process loopback capture.
+/// Walks every active render endpoint's <c>IAudioSessionManager2</c> and
+/// reports the apps behind the sessions — "what is making (or has made)
+/// sound on this PC", the candidates for per-process loopback capture.
 ///
 /// <list type="bullet">
-///   <item>System sessions (PID 0, the audio engine itself) are filtered out.</item>
-///   <item>The host's own PID is filtered out — looping back our own render endpoints to ourselves would feedback through the mix.</item>
-///   <item>A process holding sessions on multiple render endpoints appears once; per-process loopback is endpoint-agnostic.</item>
+///   <item>The system-sounds session and PID 0 are filtered out.</item>
+///   <item>Apps whose process tree contains the host are filtered out — a tree loopback on them (the host's own process, or Explorer when Mixion was started from it) would capture Mixion's output and feed it back through the mix.</item>
+///   <item>Expired sessions are ignored.</item>
+///   <item>Entries are deduplicated by root process: one per running app instance, however many processes or endpoints it plays on. Two instances of the same app yield two entries with the same name.</item>
 /// </list>
 ///
-/// Enumeration is cheap (a handful of COM calls) but allocates, so it lives
-/// off the audio path entirely. Callers should re-enumerate on demand rather
-/// than caching — a process can start producing audio mid-session.
+/// Drives the session COM interfaces directly rather than through NAudio's
+/// <c>AudioSessionManager</c>, which registers a session-created callback each
+/// time it is constructed — the device watcher calls this every second and
+/// must not pile up registrations. COM work always runs on an MTA thread.
 /// </summary>
 public sealed class AudioProcessEnumerator
 {
-    private static readonly int OwnPid = Environment.ProcessId;
+    private const uint DeviceStateActive = 0x1;
+    private const int  AudioSessionStateExpired = 2;
 
-    public IReadOnlyList<AudioProcess> Enumerate()
+    private static readonly int  OwnPid = Environment.ProcessId;
+    private static readonly Guid IidAudioSessionManager2 = new("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
+
+    /// <summary>
+    /// Enumerate audio-producing app instances, resolving names and root
+    /// processes against <paramref name="snapshot"/> (a fresh one is taken when
+    /// null). Sorted by name, then root PID, so the order is stable between calls.
+    /// </summary>
+    public IReadOnlyList<AudioProcess> Enumerate(ProcessSnapshot? snapshot = null)
     {
-        var result = new List<AudioProcess>();
-        var seen   = new HashSet<int>();
+        var sessionPids = new HashSet<int>();
+        RunOnMta(() => CollectSessionProcessIds(sessionPids));
 
-        var enumerator = new MMDeviceEnumerator();
+        snapshot ??= ProcessSnapshot.Capture();
+
+        var result    = new List<AudioProcess>();
+        var seenRoots = new HashSet<int>();
+        var ordered   = sessionPids.ToArray();
+        Array.Sort(ordered);
+
+        foreach (var pid in ordered)
+        {
+            // Gone since it opened the session — nothing to capture.
+            if (!snapshot.TryGet(pid, out var entry) || entry.Name.Length == 0) continue;
+
+            var root = snapshot.ResolveAppRoot(pid);
+            if (snapshot.IsSelfOrAncestor(root, OwnPid)) continue;
+            if (!seenRoots.Add(root)) continue;
+
+            result.Add(new AudioProcess(pid, root, entry.Name));
+        }
+
+        result.Sort((a, b) =>
+        {
+            var byName = string.Compare(a.ProcessName, b.ProcessName, StringComparison.OrdinalIgnoreCase);
+            return byName != 0 ? byName : a.RootProcessId.CompareTo(b.RootProcessId);
+        });
+        return result;
+    }
+
+    private static void CollectSessionProcessIds(HashSet<int> pids)
+    {
+        var clsid = CLSID_MMDeviceEnumerator;
+        var iid   = IID_IMMDeviceEnumerator;
+        var hr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out var enumeratorObj);
+        if (hr < 0 || enumeratorObj is null)
+            throw new InvalidOperationException($"CoCreateInstance(MMDeviceEnumerator) failed. HRESULT 0x{hr:X8}.");
+
+        object? collectionObj = null;
         try
         {
-            foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            var enumerator = (IMMDeviceEnumerator)enumeratorObj;
+            hr = enumerator.EnumAudioEndpoints(EDATAFLOW_RENDER, DeviceStateActive, out collectionObj);
+            if (hr < 0 || collectionObj is null) return;
+
+            var collection = (IMMDeviceCollection)collectionObj;
+            if (collection.GetCount(out var count) < 0) return;
+
+            for (uint i = 0; i < count; i++)
             {
-                AudioSessionManager? manager = null;
+                if (collection.Item(i, out var device) < 0 || device is null) continue;
                 try
                 {
-                    manager = device.AudioSessionManager;
-                    var sessions = manager.Sessions;
-                    if (sessions is null) continue;
-
-                    for (var i = 0; i < sessions.Count; i++)
-                    {
-                        var session = sessions[i];
-                        var pid = (int)session.GetProcessID;
-                        if (pid <= 0)         continue; // 0 = system
-                        if (pid == OwnPid)    continue; // never capture ourselves
-                        if (!seen.Add(pid))   continue; // already noted from another endpoint
-
-                        if (TryDescribeProcess(pid, out var name, out var path))
-                            result.Add(new AudioProcess(pid, name, path));
-                    }
+                    CollectFromDevice(device, pids);
                 }
-                catch
+                catch (COMException)
                 {
-                    // A device can vanish between EnumerateAudioEndPoints and
-                    // the AudioSessionManager walk. Skip and move on.
+                    // The endpoint can vanish between enumeration and the
+                    // session walk. Skip it; the next poll sees the new set.
                 }
                 finally
                 {
-                    device.Dispose();
+                    Marshal.ReleaseComObject(device);
                 }
             }
         }
         finally
         {
-            // MMDeviceEnumerator implements no IDisposable in NAudio's binding —
-            // GC handles the underlying COM ref.
+            if (collectionObj is not null) Marshal.ReleaseComObject(collectionObj);
+            Marshal.ReleaseComObject(enumeratorObj);
         }
-
-        // Stable order by friendly name — keeps the FE picker from reshuffling
-        // every time the user opens it.
-        result.Sort((a, b) => string.Compare(a.ProcessName, b.ProcessName, StringComparison.OrdinalIgnoreCase));
-        return result;
     }
 
-    /// <summary>
-    /// Resolve a PID to a name + executable path. <c>Process.GetProcessById</c>
-    /// throws if the PID has just exited; we treat that as "not eligible" and
-    /// drop it from the result.
-    /// </summary>
-    private static bool TryDescribeProcess(int pid, out string name, out string? path)
+    private static void CollectFromDevice(IMMDevice device, HashSet<int> pids)
     {
+        var iid = IidAudioSessionManager2;
+        if (device.Activate(ref iid, CLSCTX_INPROC_SERVER, IntPtr.Zero, out var managerObj) < 0 || managerObj is null)
+            return;
+
+        object? sessionsObj = null;
         try
         {
-            using var p = Process.GetProcessById(pid);
-            name = p.ProcessName;
-            try   { path = p.MainModule?.FileName; }
-            catch { path = null; } // protected processes refuse MainModule access
-            return true;
+            var manager = (IAudioSessionManager2)managerObj;
+            if (manager.GetSessionEnumerator(out sessionsObj) < 0 || sessionsObj is null) return;
+
+            var sessions = (IAudioSessionEnumerator)sessionsObj;
+            if (sessions.GetCount(out var count) < 0) return;
+
+            for (var i = 0; i < count; i++)
+            {
+                if (sessions.GetSession(i, out var controlObj) < 0 || controlObj is null) continue;
+                try
+                {
+                    if (controlObj is not IAudioSessionControl2 control) continue;
+                    // S_OK (0) means this IS the system-sounds session.
+                    if (control.IsSystemSoundsSession() == 0) continue;
+                    if (control.GetState(out var state) >= 0 && state == AudioSessionStateExpired) continue;
+                    // AUDCLNT_S_NO_SINGLE_PROCESS is a success code; the id is still usable.
+                    if (control.GetProcessId(out var pid) < 0) continue;
+                    if (pid == 0 || pid == OwnPid) continue;
+                    pids.Add((int)pid);
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(controlObj);
+                }
+            }
         }
-        catch
+        finally
         {
-            name = string.Empty;
-            path = null;
-            return false;
+            if (sessionsObj is not null) Marshal.ReleaseComObject(sessionsObj);
+            Marshal.ReleaseComObject(managerObj);
         }
+    }
+
+    [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceCollection
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int Item(uint index, [MarshalAs(UnmanagedType.Interface)] out IMMDevice device);
+    }
+
+    /// <summary>IAudioSessionManager2 — only the vtable prefix we call is declared.</summary>
+    [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionManager2
+    {
+        // IAudioSessionManager
+        [PreserveSig] int GetAudioSessionControl(IntPtr sessionGuid, uint streamFlags, out IntPtr sessionControl);
+        [PreserveSig] int GetSimpleAudioVolume(IntPtr sessionGuid, uint streamFlags, out IntPtr audioVolume);
+        // IAudioSessionManager2
+        [PreserveSig] int GetSessionEnumerator([MarshalAs(UnmanagedType.IUnknown)] out object sessionEnumerator);
+    }
+
+    [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionEnumerator
+    {
+        [PreserveSig] int GetCount(out int count);
+        [PreserveSig] int GetSession(int index, [MarshalAs(UnmanagedType.IUnknown)] out object session);
+    }
+
+    /// <summary>IAudioSessionControl2 — vtable up to <c>IsSystemSoundsSession</c>. Unused members take raw pointers.</summary>
+    [Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionControl2
+    {
+        // IAudioSessionControl
+        [PreserveSig] int GetState(out int state);
+        [PreserveSig] int GetDisplayName(out IntPtr displayName);
+        [PreserveSig] int SetDisplayName(IntPtr displayName, IntPtr eventContext);
+        [PreserveSig] int GetIconPath(out IntPtr iconPath);
+        [PreserveSig] int SetIconPath(IntPtr iconPath, IntPtr eventContext);
+        [PreserveSig] int GetGroupingParam(out Guid groupingParam);
+        [PreserveSig] int SetGroupingParam(IntPtr groupingParam, IntPtr eventContext);
+        [PreserveSig] int RegisterAudioSessionNotification(IntPtr client);
+        [PreserveSig] int UnregisterAudioSessionNotification(IntPtr client);
+        // IAudioSessionControl2
+        [PreserveSig] int GetSessionIdentifier(out IntPtr sessionIdentifier);
+        [PreserveSig] int GetSessionInstanceIdentifier(out IntPtr sessionInstanceIdentifier);
+        [PreserveSig] int GetProcessId(out uint processId);
+        [PreserveSig] int IsSystemSoundsSession();
     }
 }

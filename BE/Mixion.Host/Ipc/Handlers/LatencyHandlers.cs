@@ -21,8 +21,7 @@ public static class LatencyHandlers
     /// One entry per channel — capture or render — that the engine has open.
     /// <see cref="Channels"/> / <see cref="BitsPerSample"/> / <see cref="SampleRate"/>
     /// reflect the device's mix format (display-only — the engine resamples
-    /// nothing and works in 32-bit float mono internally for inputs, stereo
-    /// for outputs).
+    /// nothing and works in 32-bit float stereo internally on both buses).
     ///
     /// <see cref="Mode"/> is null for capture channels (they're always
     /// shared / IAudioClient3 / process-loopback in v1) and one of

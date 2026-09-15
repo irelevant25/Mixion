@@ -101,6 +101,23 @@ public sealed class RingBuffer
         return toRead;
     }
 
+    /// <summary>
+    /// Consumer side: drop the oldest <paramref name="count"/> samples, or all
+    /// of them if fewer are queued. Returns how many were dropped. Keep
+    /// <paramref name="count"/> a whole number of frames for interleaved rings.
+    /// </summary>
+    public int Discard(int count)
+    {
+        var tail  = Volatile.Read(ref _tail);
+        var head  = Volatile.Read(ref _head);
+        var avail = (int)(head - tail);
+        var n     = Math.Min(count, avail);
+        if (n <= 0) return 0;
+
+        Volatile.Write(ref _tail, tail + n);
+        return n;
+    }
+
     /// <summary>Discards every queued sample. Caller-side, single-threaded.</summary>
     public void Clear()
     {

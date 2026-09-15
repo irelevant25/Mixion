@@ -20,7 +20,7 @@ public sealed class RenderDevice : IRenderDevice
     private readonly WasapiOut               _output;
     private readonly RingBuffer              _ring;
     private readonly RingBufferWaveProvider  _provider;
-    private IntPtr                           _mmcssHandle;
+    private volatile bool                    _faulted;
 
     public string Id           => _device.ID;
     public string FriendlyName => _device.FriendlyName;
@@ -35,6 +35,7 @@ public sealed class RenderDevice : IRenderDevice
     public int    BufferFrames => Math.Max(1, LatencyMs * SampleRate / 1000);
     public RenderMode Mode => RenderMode.Shared;
     public string? ExclusiveFallbackReason { get; set; }
+    public bool   IsFaulted    => _faulted;
 
     public RenderDevice(MMDevice device, int ringCapacityFrames, int latencyMs = 10)
     {
@@ -48,24 +49,30 @@ public sealed class RenderDevice : IRenderDevice
         _provider = new RingBufferWaveProvider(_ring, fmt);
 
         _output.Init(_provider);
+        _output.PlaybackStopped += OnPlaybackStopped;
     }
 
-    public void Start()
+    /// <summary>
+    /// NAudio reports a stream that died under us (device unplugged, format
+    /// changed) by stopping with an exception; a plain <see cref="Stop"/>
+    /// stops without one.
+    /// </summary>
+    private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
     {
-        _output.Play();
-        _mmcssHandle = Mmcss.Begin();
+        if (e.Exception is not null) _faulted = true;
     }
+
+    public void Start() => _output.Play();
 
     public void Stop()
     {
         try { _output.Stop(); } catch { /* device may have vanished */ }
-        Mmcss.Revert(_mmcssHandle);
-        _mmcssHandle = IntPtr.Zero;
     }
 
     public void Dispose()
     {
         Stop();
+        _output.PlaybackStopped -= OnPlaybackStopped;
         _output.Dispose();
         _device.Dispose();
     }
@@ -87,6 +94,8 @@ internal sealed class RingBufferWaveProvider : IWaveProvider
     private readonly RingBuffer _ring;
     private readonly WaveFormat _format;
     private readonly float[]   _scratch;
+    /// <summary>Managed id of the NAudio playback thread already registered with MMCSS.</summary>
+    private int                _mmcssThreadId;
 
     public WaveFormat WaveFormat => _format;
 
@@ -106,6 +115,15 @@ internal sealed class RingBufferWaveProvider : IWaveProvider
 
     public int Read(byte[] buffer, int offset, int count)
     {
+        // Read runs on NAudio's playback thread — a new one per Play — so
+        // register that thread with MMCSS the first time we see it.
+        var thread = Environment.CurrentManagedThreadId;
+        if (_mmcssThreadId != thread)
+        {
+            _mmcssThreadId = thread;
+            Mmcss.Begin();
+        }
+
         var channels = _format.Channels;
         var dst      = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(
                            buffer.AsSpan(offset, count));

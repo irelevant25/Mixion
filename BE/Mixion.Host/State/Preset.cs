@@ -31,13 +31,15 @@ public sealed record PresetChannel(
 /// would only patch BE state and the user's row of strips would still be
 /// empty.
 ///
-/// A slot with both names null/empty represents an intentionally unassigned
-/// placeholder (the user wanted the letter held). Assigned slots carry the
-/// device's stable identity (friendly + interface name) and are re-resolved
-/// against the live endpoints at load time, the same way <see cref="PresetChannel"/>
-/// is.
+/// A slot with no <see cref="DeviceId"/> and no names represents an
+/// intentionally unassigned placeholder (the user wanted the letter held).
+/// Assigned slots carry the channel id they were bound to — a WASAPI endpoint
+/// id or <c>process:&lt;name&gt;</c> — plus the device's friendly + interface
+/// name, and are re-resolved at load time: exact id first, then by name for
+/// presets moved between machines. Presets written before slots carried ids
+/// have a null <see cref="DeviceId"/> and resolve by name only.
 /// </summary>
-public sealed record PresetSlot(string? FriendlyName, string? InterfaceName);
+public sealed record PresetSlot(string? FriendlyName, string? InterfaceName, string? DeviceId = null);
 
 /// <summary>
 /// Versioned snapshot of the mixer. Whole shape is round-tripped via

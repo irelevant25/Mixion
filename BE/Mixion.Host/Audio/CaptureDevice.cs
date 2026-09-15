@@ -6,19 +6,22 @@ namespace Mixion.Host.Audio;
 
 /// <summary>
 /// Wraps a single <see cref="WasapiCapture"/> endpoint, converts incoming
-/// frames to internal <c>float</c> mono at the device's mix-format sample
-/// rate, and pushes them into a <see cref="RingBuffer"/>.
+/// frames to internal interleaved stereo <c>float</c> at the device's
+/// mix-format sample rate, and pushes them into a <see cref="RingBuffer"/>.
 ///
-/// "Internal mono" is the common denominator the mix engine reasons about.
-/// Multi-channel mixing per output bus is handled in the matrix, not here.
+/// Mono devices are duplicated to both sides; stereo devices keep their
+/// image; wider devices fold their extra channels into both sides (see
+/// <see cref="WaveFormatX.ConvertToStereo"/>).
 /// </summary>
 public sealed class CaptureDevice : IAudioCaptureSource
 {
     private readonly MMDevice      _device;
     private readonly WasapiCapture _capture;
     private readonly RingBuffer    _ring;
-    private readonly float[]       _scratchMono;
-    private IntPtr                 _mmcssHandle;
+    private readonly float[]       _scratch;
+    /// <summary>Managed id of the NAudio capture thread already registered with MMCSS.</summary>
+    private int                    _mmcssThreadId;
+    private volatile bool          _faulted;
 
     /// <summary>
     /// Default capture buffer in ms when the user hasn't picked a value.
@@ -40,9 +43,10 @@ public sealed class CaptureDevice : IAudioCaptureSource
     // Approximate from the configured ms; the OS may round up but this is the
     // floor MixEngine should plan around.
     public int    BufferFrames => Math.Max(1, _bufferMs * SampleRate / 1000);
+    public bool   IsFaulted    => _faulted;
     public event EventHandler? DataReady;
 
-    public CaptureDevice(MMDevice device, int ringCapacitySamples, int bufferMs = DefaultCaptureBufferMs)
+    public CaptureDevice(MMDevice device, int ringCapacityFrames, int bufferMs = DefaultCaptureBufferMs)
     {
         _device   = device;
         _bufferMs = bufferMs;
@@ -58,45 +62,56 @@ public sealed class CaptureDevice : IAudioCaptureSource
             ShareMode = AudioClientShareMode.Shared,
         };
 
-        _ring        = new RingBuffer(ringCapacitySamples);
-        _scratchMono = new float[ringCapacitySamples];
+        // Interleaved stereo — 2 floats per frame.
+        _ring    = new RingBuffer(ringCapacityFrames * 2);
+        _scratch = new float[ringCapacityFrames * 2];
 
-        _capture.DataAvailable += OnData;
+        _capture.DataAvailable    += OnData;
+        _capture.RecordingStopped += OnRecordingStopped;
     }
 
-    public void Start()
-    {
-        _capture.StartRecording();
-
-        // NAudio runs DataAvailable on its own thread; we can't easily reach
-        // it. Tag *this* thread as Pro Audio anyway in case StartRecording
-        // pumps inline (it doesn't on current NAudio, but it's harmless).
-        _mmcssHandle = Mmcss.Begin();
-    }
+    public void Start() => _capture.StartRecording();
 
     public void Stop()
     {
         try { _capture.StopRecording(); } catch { /* device may have vanished */ }
-        Mmcss.Revert(_mmcssHandle);
-        _mmcssHandle = IntPtr.Zero;
     }
 
     public void Dispose()
     {
         Stop();
-        _capture.DataAvailable -= OnData;
+        _capture.DataAvailable    -= OnData;
+        _capture.RecordingStopped -= OnRecordingStopped;
         _capture.Dispose();
         _device.Dispose();
     }
 
     private void OnData(object? _, WaveInEventArgs e)
     {
+        // DataAvailable runs on NAudio's capture thread — a new one per
+        // recording — so register that thread with MMCSS the first time we see
+        // it. (Start() runs on whichever thread attaches the device.)
+        var thread = Environment.CurrentManagedThreadId;
+        if (_mmcssThreadId != thread)
+        {
+            _mmcssThreadId = thread;
+            Mmcss.Begin();
+        }
+
         if (e.BytesRecorded == 0) return;
 
-        var fmt    = _capture.WaveFormat;
-        var span   = _scratchMono.AsSpan();
-        var frames = WaveFormatX.ConvertToMono(e.Buffer.AsSpan(0, e.BytesRecorded), fmt, span);
-        _ring.Write(span.Slice(0, frames));
+        var frames = WaveFormatX.ConvertToStereo(e.Buffer.AsSpan(0, e.BytesRecorded), _capture.WaveFormat, _scratch);
+        _ring.Write(_scratch.AsSpan(0, frames * 2));
         DataReady?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// NAudio reports a stream that died under us (device unplugged, format
+    /// changed, taken exclusively by another app) by stopping with an
+    /// exception. A plain <see cref="Stop"/> stops without one.
+    /// </summary>
+    private void OnRecordingStopped(object? _, StoppedEventArgs e)
+    {
+        if (e.Exception is not null) _faulted = true;
     }
 }

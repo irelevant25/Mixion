@@ -47,18 +47,19 @@ public sealed class TelemetryBroadcaster : BackgroundService
             {
                 var engine = _engine.Current;
                 if (engine is null) continue;
-
-                var meters = engine.Meters;
-                var n      = meters.ChannelCount;
-                if (n == 0) continue;
-
                 if (_hub.Count == 0) continue;
 
-                if (pairs.Length    < n * 2)              pairs    = new float[n * 2];
-                var frameSize = TelemetryFrame.SizeFor(n);
-                if (frameBuf.Length < frameSize)          frameBuf = new byte[frameSize];
+                // Sized for the engine's slot capacity, so a channel attached
+                // by the device watcher between two reads can't overflow it.
+                var capacity = engine.MeterSideCapacity;
+                if (pairs.Length < capacity * 2) pairs = new float[capacity * 2];
 
-                var frameId = meters.TrySnapshot(pairs.AsSpan(0, n * 2));
+                var n = engine.SnapshotMeters(pairs, out var frameId);
+                if (n == 0) continue;
+
+                var frameSize = TelemetryFrame.SizeFor(n);
+                if (frameBuf.Length < frameSize) frameBuf = new byte[frameSize];
+
                 TelemetryFrame.Pack(frameBuf.AsSpan(0, frameSize), frameId, n, pairs.AsSpan(0, n * 2));
 
                 foreach (var conn in _hub.Connections)

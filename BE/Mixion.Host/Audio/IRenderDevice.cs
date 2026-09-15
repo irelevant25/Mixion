@@ -78,6 +78,13 @@ public interface IRenderDevice : IDisposable
     /// </summary>
     string? ExclusiveFallbackReason { get; set; }
 
+    /// <summary>
+    /// True once the stream has failed under us — the device was removed or
+    /// reconfigured, or another app took it exclusively. The device watcher
+    /// re-opens or detaches faulted devices without rebuilding the engine.
+    /// </summary>
+    bool IsFaulted { get; }
+
     /// <summary>Begin pulling from <see cref="Ring"/> and rendering to the device.</summary>
     void Start();
 

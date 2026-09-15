@@ -6,10 +6,10 @@ namespace Mixion.Host.Ipc.Handlers;
 /// <c>setPan</c>, <c>setGate</c>, <c>setCompressor</c>, <c>addEqBand</c>,
 /// <c>setEqBand</c>, <c>removeEqBand</c> — per-channel DSP control
 /// (BE-077). State mutation follows the same pattern as
-/// <see cref="ChannelHandlers"/>: snapshot the current
-/// <see cref="MixerState"/>, build a new immutable record with the patched
-/// <see cref="Channel"/>, publish it. The mix loop picks it up on its next
-/// tick and the relevant DSP processors recompute coefficients via their
+/// <see cref="ChannelHandlers"/>: derive the next immutable
+/// <see cref="MixerState"/> with the patched <see cref="Channel"/> inside
+/// <see cref="Audio.MixEngine.UpdateState"/>. The mix loop picks it up on its
+/// next tick and the relevant DSP processors recompute coefficients via their
 /// <c>Apply</c> methods.
 ///
 /// <c>addEqBand</c> assigns a fresh server-side id; the response carries it
@@ -53,10 +53,9 @@ public static class DspHandlers
             var bus = ChannelHandlers.ParseBus(p.Bus);
 
             var engine = RequireEngine(host);
-            var next = ChannelHandlers.ApplyChannelChange(
-                engine.SnapshotState(), bus, p.Channel,
-                ch => ch with { Pan = pan });
-            engine.PublishState(next);
+            engine.UpdateState(state => ChannelHandlers.ApplyChannelChange(
+                state, bus, p.Channel,
+                ch => ch with { Pan = pan }));
 
             return Task.FromResult<object?>(new { ok = true });
         });
@@ -68,10 +67,9 @@ public static class DspHandlers
             var gate = NormaliseGate(p.Gate);
 
             var engine = RequireEngine(host);
-            var next = ChannelHandlers.ApplyChannelChange(
-                engine.SnapshotState(), bus, p.Channel,
-                ch => ch with { Gate = gate });
-            engine.PublishState(next);
+            engine.UpdateState(state => ChannelHandlers.ApplyChannelChange(
+                state, bus, p.Channel,
+                ch => ch with { Gate = gate }));
 
             return Task.FromResult<object?>(new { ok = true });
         });
@@ -83,10 +81,9 @@ public static class DspHandlers
             var comp = NormaliseCompressor(p.Compressor);
 
             var engine = RequireEngine(host);
-            var next = ChannelHandlers.ApplyChannelChange(
-                engine.SnapshotState(), bus, p.Channel,
-                ch => ch with { Compressor = comp });
-            engine.PublishState(next);
+            engine.UpdateState(state => ChannelHandlers.ApplyChannelChange(
+                state, bus, p.Channel,
+                ch => ch with { Compressor = comp }));
 
             return Task.FromResult<object?>(new { ok = true });
         });
@@ -99,10 +96,9 @@ public static class DspHandlers
             var band = ToEqBand(p.Band, bandId);
 
             var engine = RequireEngine(host);
-            var next = ChannelHandlers.ApplyChannelChange(
-                engine.SnapshotState(), bus, p.Channel,
-                ch => ch with { Eq = AppendBand(ch.Eq, band) });
-            engine.PublishState(next);
+            engine.UpdateState(state => ChannelHandlers.ApplyChannelChange(
+                state, bus, p.Channel,
+                ch => ch with { Eq = AppendBand(ch.Eq, band) }));
 
             return Task.FromResult<object?>(new { ok = true, bandId });
         });
@@ -116,10 +112,9 @@ public static class DspHandlers
             var band = ToEqBand(p.Band, p.BandId);
 
             var engine = RequireEngine(host);
-            var next = ChannelHandlers.ApplyChannelChange(
-                engine.SnapshotState(), bus, p.Channel,
-                ch => ch with { Eq = ReplaceBand(ch.Eq, p.BandId, band) });
-            engine.PublishState(next);
+            engine.UpdateState(state => ChannelHandlers.ApplyChannelChange(
+                state, bus, p.Channel,
+                ch => ch with { Eq = ReplaceBand(ch.Eq, p.BandId, band) }));
 
             return Task.FromResult<object?>(new { ok = true });
         });
@@ -132,10 +127,9 @@ public static class DspHandlers
             var bus = ChannelHandlers.ParseBus(p.Bus);
 
             var engine = RequireEngine(host);
-            var next = ChannelHandlers.ApplyChannelChange(
-                engine.SnapshotState(), bus, p.Channel,
-                ch => ch with { Eq = RemoveBand(ch.Eq, p.BandId) });
-            engine.PublishState(next);
+            engine.UpdateState(state => ChannelHandlers.ApplyChannelChange(
+                state, bus, p.Channel,
+                ch => ch with { Eq = RemoveBand(ch.Eq, p.BandId) }));
 
             return Task.FromResult<object?>(new { ok = true });
         });
@@ -149,10 +143,9 @@ public static class DspHandlers
             var bus = ChannelHandlers.ParseBus(p.Bus);
 
             var engine = RequireEngine(host);
-            var next = ChannelHandlers.ApplyChannelChange(
-                engine.SnapshotState(), bus, p.Channel,
-                ch => ch with { Eq = SetEnabled(ch.Eq, p.Enabled) });
-            engine.PublishState(next);
+            engine.UpdateState(state => ChannelHandlers.ApplyChannelChange(
+                state, bus, p.Channel,
+                ch => ch with { Eq = SetEnabled(ch.Eq, p.Enabled) }));
 
             return Task.FromResult<object?>(new { ok = true });
         });

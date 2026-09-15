@@ -11,11 +11,16 @@ public static class SessionEndpoint
 {
     public static IEndpointRouteBuilder MapSession(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/session", (HttpContext ctx) =>
+        app.MapGet("/api/session", async (HttpContext ctx) =>
         {
             var store         = ctx.RequestServices.GetRequiredService<SessionStore>();
             var engineHost    = ctx.RequestServices.GetRequiredService<EngineHost>();
             var currentPreset = ctx.RequestServices.GetRequiredService<CurrentPresetState>();
+
+            // A page that loads while the engine is still starting (a reload
+            // during startup, `ng serve` reconnecting to a restarted host) would
+            // otherwise hydrate an empty mixer and no preset layout.
+            await engineHost.WaitForStartupAsync(ctx.RequestAborted);
 
             var token = store.Issue();
             var state = engineHost.Current?.SnapshotState().ToDto() ?? StateDto.Empty;

@@ -21,6 +21,15 @@ public static class StaticFiles
         var fileOptions = new StaticFileOptions
         {
             FileProvider = provider,
+            // index.html is always revalidated: the host reuses its port across
+            // restarts, so a cached copy could reference hashed bundles that an
+            // updated Mixion.exe no longer contains. Hashed assets keep the
+            // default caching.
+            OnPrepareResponse = ctx =>
+            {
+                if (string.Equals(ctx.File.Name, "index.html", StringComparison.OrdinalIgnoreCase))
+                    ctx.Context.Response.Headers.CacheControl = "no-cache";
+            },
         };
 
         app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = provider });
@@ -41,6 +50,7 @@ public static class StaticFiles
             }
 
             ctx.Response.ContentType = "text/html; charset=utf-8";
+            ctx.Response.Headers.CacheControl = "no-cache";
             await using var stream = indexFile.CreateReadStream();
             await stream.CopyToAsync(ctx.Response.Body);
         });

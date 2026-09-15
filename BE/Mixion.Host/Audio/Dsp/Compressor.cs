@@ -15,13 +15,16 @@ namespace Mixion.Host.Audio.Dsp;
 ///   - inside knee (threshold ± knee/2):              quadratic transition
 ///   - above knee (env &gt; threshold + knee/2):     overshoot · (1 − 1/ratio)
 ///
+/// Stereo blocks go through <see cref="ProcessStereo"/>, which links the two
+/// sides: the louder side drives the detector and both sides get the same gain
+/// reduction, so a loud hit on one side doesn't pull the image across.
+///
 /// Make-up gain is applied as a smoothed linear factor (BE-078) so toggling
 /// or sliding it doesn't click. The maximum dB of gain reduction observed
 /// across the last block is exposed via <see cref="GainReductionDb"/> for
 /// telemetry / the FE compressor meter.
 ///
-/// No allocations on the hot path. <see cref="Process"/> walks the span
-/// once per call.
+/// No allocations on the hot path. Processing walks the block once per call.
 /// </summary>
 public sealed class Compressor
 {
@@ -82,30 +85,49 @@ public sealed class Compressor
         _makeupTarget  = MathF.Pow(10f, state.MakeupDb / 20f);
     }
 
-    public void Process(Span<float> samples)
+    /// <summary>Compress a mono block in place.</summary>
+    public void Process(Span<float> samples) => ProcessCore(samples, Span<float>.Empty);
+
+    /// <summary>
+    /// Compress a stereo pair in place with a linked detector — see the class
+    /// remarks. Both spans must be the same length.
+    /// </summary>
+    public void ProcessStereo(Span<float> left, Span<float> right)
+    {
+        if (right.Length != left.Length)
+            throw new ArgumentException("Stereo blocks must have the same length.", nameof(right));
+        ProcessCore(left, right);
+    }
+
+    private void ProcessCore(Span<float> left, Span<float> right)
     {
         if (!_enabled)
         {
             // Even when bypassed, ease makeup back to unity so a re-enable
             // is glitch-free.
-            EaseMakeup(samples.Length);
+            EaseMakeup(left.Length);
             return;
         }
 
-        var maxGr = 0f;
-        var envDb = _envDb;
+        var stereo        = right.Length != 0;
+        var maxGr         = 0f;
+        var envDb         = _envDb;
         var makeupCurrent = _makeupCurrent;
         var makeupTarget  = _makeupTarget;
         var makeupStep    = (makeupTarget - makeupCurrent) / MakeupFadeSamples;
 
-        for (var i = 0; i < samples.Length; i++)
+        for (var i = 0; i < left.Length; i++)
         {
-            var x = samples[i];
+            var absX = MathF.Abs(left[i]);
+            if (stereo)
+            {
+                var absR = MathF.Abs(right[i]);
+                if (absR > absX) absX = absR;
+            }
 
             // dB-domain peak detector. Dead-floor at -120 dB to avoid
             // log10(0) on silence and to keep the envelope from trailing
             // off into NaN territory.
-            var absX     = MathF.Abs(x);
             var inputDb  = absX > 1e-9f ? 20f * MathF.Log10(absX) : -120f;
             var coeff    = inputDb > envDb ? _attackCoeff : _releaseCoeff;
             envDb       += (inputDb - envDb) * coeff;
@@ -133,7 +155,8 @@ public sealed class Compressor
 
             // dB → linear; multiply by smoothed make-up.
             var gainLin = MathF.Pow(10f, reductionDb / 20f) * makeupCurrent;
-            samples[i]  = x * gainLin;
+            left[i] *= gainLin;
+            if (stereo) right[i] *= gainLin;
 
             if (makeupCurrent != makeupTarget)
             {
