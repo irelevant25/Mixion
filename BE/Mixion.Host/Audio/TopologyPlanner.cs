@@ -10,14 +10,14 @@ public abstract record SourceTarget
     /// <summary>A WASAPI endpoint, by <c>MMDevice.ID</c>.</summary>
     public sealed record Endpoint(string DeviceId) : SourceTarget;
 
-    /// <summary>A per-process loopback on an app's root process.</summary>
+    /// <summary>A per-process loopback on an app's capture target: its root process, or the top-most one below it whose tree doesn't contain Mixion.</summary>
     public sealed record App(string ProcessName, int RootProcessId) : SourceTarget;
 }
 
 /// <summary>How an existing slot is bound right now.</summary>
 /// <param name="HasSource">A source or device is attached to the slot.</param>
 /// <param name="Healthy">The attached source is still delivering: not faulted and, for an app, its process is alive.</param>
-/// <param name="TargetProcessId">For an app slot, the root process the loopback is bound to.</param>
+/// <param name="TargetProcessId">For an app slot, the process the loopback is bound to.</param>
 public readonly record struct SlotBinding(bool HasSource, bool Healthy, int? TargetProcessId = null)
 {
     public static SlotBinding Empty => new(false, false);
@@ -57,7 +57,7 @@ public sealed record TopologyPlan(
 ///
 /// Rules:
 /// <list type="bullet">
-///   <item><b>Apps</b> (<c>process:&lt;name&gt;</c>) are identified by name only. A healthy binding stays put — unless it's bound to an instance that never played audio while another instance of the app does, in which case it follows the one making sound. A dead or missing binding is re-bound to a running instance — preferring one with an audio session, else any capturable root process of that name — or detached when the app isn't running.</item>
+///   <item><b>Apps</b> (<c>process:&lt;name&gt;</c>) are identified by name only. A healthy binding stays put — unless it's bound to an instance that never played audio while another instance of the app does, in which case it follows the one making sound. A dead or missing binding is re-bound to a running instance — preferring one with an audio session, else any capturable root process of that name — or detached when the app isn't running. An app running only as the tree Mixion was started from keeps a dead binding until it opens a session again.</item>
 ///   <item><b>Devices</b> are identified by endpoint id and only reconsidered on passes that scanned endpoints. An active endpoint at the engine rate is (re-)attached when its slot is empty or its stream faulted; a slot whose endpoint went away or changed rate is detached.</item>
 ///   <item><b>New</b> endpoints at the engine rate and new apps with an audio session are attached as new channels, except apps the user detached this session.</item>
 ///   <item>Targets that recently failed to open are skipped until the caller's cooldown expires.</item>
@@ -175,10 +175,14 @@ public static class TopologyPlanner
         {
             rebinds.Add(new SlotRebind(index, target));
         }
-        else if (binding.HasSource)
+        else if (binding.HasSource && (target is not null || processes.FindAppRoots(app).Count == 0))
         {
             // The app is gone (or can't be opened right now): let go of the
-            // dead stream so the channel reads as unavailable.
+            // dead stream so the channel reads as unavailable. An app still
+            // running only as the tree Mixion was started from keeps its
+            // binding instead: it is between audio processes (Chrome recycling
+            // its audio service), and its next session re-binds it without the
+            // channel flickering to unavailable.
             rebinds.Add(new SlotRebind(index, null));
         }
     }

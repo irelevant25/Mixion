@@ -101,6 +101,32 @@ public sealed class ProcessSnapshot
     }
 
     /// <summary>
+    /// The process a tree loopback should target to capture the audio of
+    /// <paramref name="processId"/>: normally its app root (see
+    /// <see cref="ResolveAppRoot"/>). When that tree contains
+    /// <paramref name="hostProcessId"/> — Mixion was started from the app, say by
+    /// opening it from Chrome's downloads — capturing the root would feed Mixion's
+    /// own output back, so it's the top-most process of the app on the way up
+    /// whose tree doesn't contain the host (for Chrome, the audio service). Null
+    /// when even <paramref name="processId"/>'s own tree contains the host.
+    /// </summary>
+    public int? ResolveCaptureTarget(int processId, int hostProcessId)
+    {
+        if (IsSelfOrAncestor(processId, hostProcessId)) return null;
+        if (!_byId.TryGetValue(processId, out var current)) return processId;
+
+        for (var depth = 0; depth < MaxAncestorDepth; depth++)
+        {
+            if (current.ParentProcessId == current.ProcessId) break;
+            if (!_byId.TryGetValue(current.ParentProcessId, out var parent)) break;
+            if (!NameEquals(parent.Name, current.Name)) break;
+            if (IsSelfOrAncestor(parent.ProcessId, hostProcessId)) break;
+            current = parent;
+        }
+        return current.ProcessId;
+    }
+
+    /// <summary>
     /// Root processes (see <see cref="ResolveAppRoot"/>) of every running
     /// instance of <paramref name="name"/>, lowest PID first.
     /// </summary>

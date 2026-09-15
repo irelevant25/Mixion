@@ -54,7 +54,7 @@ public class AudioProcessEnumeratorTests
 
                     var pid = (int)session.GetProcessID;
                     if (pid == 0 || !snapshot.TryGet(pid, out var entry)) continue;
-                    if (snapshot.IsSelfOrAncestor(snapshot.ResolveAppRoot(pid), Environment.ProcessId)) continue;
+                    if (snapshot.ResolveCaptureTarget(pid, Environment.ProcessId) is null) continue;
 
                     names.Add(entry.Name);
                 }

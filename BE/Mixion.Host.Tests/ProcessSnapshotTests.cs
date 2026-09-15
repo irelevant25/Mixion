@@ -70,6 +70,57 @@ public class ProcessSnapshotTests
     }
 
     [Fact]
+    public void ResolveCaptureTarget_IsTheAppRootWhenTheHostIsOutsideItsTree()
+    {
+        // explorer → chrome (browser) → chrome (audio service); Mixion started from explorer.
+        var snapshot = Snapshot((1, 0, "explorer"), (100, 1, "chrome"), (300, 100, "chrome"), (50, 1, "Mixion"));
+
+        Assert.Equal(100, snapshot.ResolveCaptureTarget(300, hostProcessId: 50));
+    }
+
+    [Fact]
+    public void ResolveCaptureTarget_StopsBelowTheProcessThatStartedTheHost()
+    {
+        // Mixion opened from Chrome's downloads: chrome (browser) → Mixion, while
+        // chrome (browser) → chrome (utility) → chrome (audio service) plays the sound.
+        var snapshot = Snapshot(
+            (1, 0, "explorer"), (100, 1, "chrome"), (50, 100, "Mixion"),
+            (200, 100, "chrome"), (300, 200, "chrome"));
+
+        Assert.Equal(200, snapshot.ResolveCaptureTarget(300, hostProcessId: 50));
+    }
+
+    [Fact]
+    public void ResolveCaptureTarget_IsTheAudioProcessItselfWhenItsParentStartedTheHost()
+    {
+        // The tree on a real machine: chrome (browser) → Mixion, and chrome (browser) → chrome (audio service).
+        var snapshot = Snapshot((1, 0, "explorer"), (100, 1, "chrome"), (50, 100, "Mixion"), (300, 100, "chrome"));
+
+        Assert.Equal(300, snapshot.ResolveCaptureTarget(300, hostProcessId: 50));
+    }
+
+    [Fact]
+    public void ResolveCaptureTarget_SeesTheHostThroughOtherProcessesInBetween()
+    {
+        // chrome (browser) → cmd → Mixion, and chrome (browser) → chrome (audio service).
+        var snapshot = Snapshot(
+            (1, 0, "explorer"), (100, 1, "chrome"), (70, 100, "cmd"), (50, 70, "Mixion"), (300, 100, "chrome"));
+
+        Assert.Equal(300, snapshot.ResolveCaptureTarget(300, hostProcessId: 50));
+        Assert.Null(snapshot.ResolveCaptureTarget(100, hostProcessId: 50));
+    }
+
+    [Fact]
+    public void ResolveCaptureTarget_IsNullWhenThePlayingProcessStartedTheHost()
+    {
+        // A terminal that plays sounds itself and started Mixion.
+        var snapshot = Snapshot((1, 0, "explorer"), (10, 1, "terminal"), (50, 10, "Mixion"));
+
+        Assert.Null(snapshot.ResolveCaptureTarget(10, hostProcessId: 50));
+        Assert.Null(snapshot.ResolveCaptureTarget(50, hostProcessId: 50));
+    }
+
+    [Fact]
     public void IsRunning_RequiresTheSameExecutable()
     {
         var snapshot = Snapshot((42, 1, "vlc"));

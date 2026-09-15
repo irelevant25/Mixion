@@ -6,9 +6,10 @@ namespace Mixion.Host.Audio;
 /// <summary>
 /// An app that currently owns at least one WASAPI audio session on a render
 /// endpoint. <see cref="SessionProcessId"/> is the process that opened the
-/// session; <see cref="RootProcessId"/> is the top of that app's same-name
-/// process tree — what <see cref="ProcessLoopbackCapture"/> binds to so
-/// multi-process apps are captured whole.
+/// session; <see cref="RootProcessId"/> is what <see cref="ProcessLoopbackCapture"/>
+/// binds to so multi-process apps are captured whole — the top of that app's
+/// same-name process tree, or the top-most process below it whose tree doesn't
+/// contain Mixion (see <see cref="ProcessSnapshot.ResolveCaptureTarget"/>).
 /// </summary>
 public sealed record AudioProcess(int SessionProcessId, int RootProcessId, string ProcessName);
 
@@ -19,9 +20,9 @@ public sealed record AudioProcess(int SessionProcessId, int RootProcessId, strin
 ///
 /// <list type="bullet">
 ///   <item>The system-sounds session and PID 0 are filtered out.</item>
-///   <item>Apps whose process tree contains the host are filtered out — a tree loopback on them (the host's own process, or Explorer when Mixion was started from it) would capture Mixion's output and feed it back through the mix.</item>
+///   <item>A tree loopback must never contain the host — it would capture Mixion's output and feed it back through the mix. When an app's root tree contains the host (Mixion was opened from Chrome's downloads, say), the app is captured through the top-most process below the root that doesn't, normally the one playing audio; when there's none (the host's own process, or Explorer playing a sound when Mixion was started from it), the app is left out.</item>
 ///   <item>Expired sessions are ignored.</item>
-///   <item>Entries are deduplicated by root process: one per running app instance, however many processes or endpoints it plays on. Two instances of the same app yield two entries with the same name.</item>
+///   <item>Entries are deduplicated by capture target: normally one per running app instance, however many processes or endpoints it plays on, so two instances of the same app yield two entries with the same name. An app that started Mixion can yield one entry per child process that owns a session.</item>
 /// </list>
 ///
 /// Drives the session COM interfaces directly rather than through NAudio's
@@ -49,9 +50,9 @@ public sealed class AudioProcessEnumerator
 
         snapshot ??= ProcessSnapshot.Capture();
 
-        var result    = new List<AudioProcess>();
-        var seenRoots = new HashSet<int>();
-        var ordered   = sessionPids.ToArray();
+        var result      = new List<AudioProcess>();
+        var seenTargets = new HashSet<int>();
+        var ordered     = sessionPids.ToArray();
         Array.Sort(ordered);
 
         foreach (var pid in ordered)
@@ -59,11 +60,10 @@ public sealed class AudioProcessEnumerator
             // Gone since it opened the session — nothing to capture.
             if (!snapshot.TryGet(pid, out var entry) || entry.Name.Length == 0) continue;
 
-            var root = snapshot.ResolveAppRoot(pid);
-            if (snapshot.IsSelfOrAncestor(root, OwnPid)) continue;
-            if (!seenRoots.Add(root)) continue;
+            if (snapshot.ResolveCaptureTarget(pid, OwnPid) is not int target) continue;
+            if (!seenTargets.Add(target)) continue;
 
-            result.Add(new AudioProcess(pid, root, entry.Name));
+            result.Add(new AudioProcess(pid, target, entry.Name));
         }
 
         result.Sort((a, b) =>

@@ -266,21 +266,22 @@ public sealed class EngineFactory
         => TryOpenEndpoint<IRenderDevice>(deviceId, engineRate, "render", quiet, mm => OpenRender(mm, engineRate, Settings, quiet));
 
     /// <summary>
-    /// Open a loopback on the app rooted at <paramref name="rootProcessId"/>.
-    /// Returns null (and logs why) when the OS refuses.
+    /// Open a tree loopback on <paramref name="targetProcessId"/> — the app's root
+    /// process, or the process below it that <see cref="ProcessSnapshot.ResolveCaptureTarget"/>
+    /// picked. Returns null (and logs why) when the OS refuses.
     /// </summary>
-    public ProcessLoopbackCapture? TryOpenProcessLoopback(string processName, int rootProcessId, int engineRate, bool quiet = false)
+    public ProcessLoopbackCapture? TryOpenProcessLoopback(string processName, int targetProcessId, int engineRate, bool quiet = false)
     {
         try
         {
-            var capture = new ProcessLoopbackCapture(rootProcessId, processName, engineRate, CaptureRingFrames(engineRate));
-            _logger.LogInformation("Opened process loopback for '{Name}' (PID {Pid}).", processName, rootProcessId);
+            var capture = new ProcessLoopbackCapture(targetProcessId, processName, engineRate, CaptureRingFrames(engineRate));
+            _logger.LogInformation("Opened process loopback for '{Name}' (PID {Pid}).", processName, targetProcessId);
             return capture;
         }
         catch (Exception ex)
         {
             _logger.Log(quiet ? LogLevel.Debug : LogLevel.Warning, ex,
-                "Could not open process loopback for '{Name}' (PID {Pid}).", processName, rootProcessId);
+                "Could not open process loopback for '{Name}' (PID {Pid}).", processName, targetProcessId);
             return null;
         }
     }

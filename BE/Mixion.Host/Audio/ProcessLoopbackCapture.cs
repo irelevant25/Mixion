@@ -28,7 +28,11 @@ namespace Mixion.Host.Audio;
 /// changes whenever the app recycles it; include-tree mode on the root keeps
 /// capturing across those recycles. When the root itself exits (the user
 /// closed the app) <see cref="HasTargetExited"/> reports it and the device
-/// watcher re-binds the channel to the next instance by name.
+/// watcher re-binds the channel to the next instance by name. If the root's
+/// tree contains Mixion itself (Mixion was started from that app), callers pass
+/// the top-most process below it instead
+/// (<see cref="ProcessSnapshot.ResolveCaptureTarget"/>) — usually the one playing
+/// audio — and the watcher re-binds when the app recycles it.
 ///
 /// DRM-protected streams (some Spotify/Netflix configurations) refuse loopback
 /// at the OS level — the same hard limit a virtual cable would hit. Builds older
@@ -90,7 +94,7 @@ public sealed class ProcessLoopbackCapture : IAudioCaptureSource
     public bool   IsFaulted    => _faulted;
     public event EventHandler? DataReady;
 
-    /// <summary>Root process id this capture is bound to.</summary>
+    /// <summary>The process this tree loopback is bound to: the app's root, or the one below it picked by <see cref="ProcessSnapshot.ResolveCaptureTarget"/>.</summary>
     public int TargetProcessId => _processId;
 
     public ProcessLoopbackCapture(int targetProcessId, string processName, int sampleRate, int ringCapacityFrames)

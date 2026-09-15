@@ -88,6 +88,33 @@ public class TopologyPlannerTests
     }
 
     [Fact]
+    public void AppThatStartedMixion_KeepsItsBindingBetweenAudioProcesses()
+    {
+        // Mixion was opened from Chrome, so the browser (100) is this process's parent.
+        // Chrome recycled its audio service (the bound 300 exited) and hasn't opened a
+        // new session yet; the browser itself can't be captured, as it contains Mixion.
+        var self = Environment.ProcessId;
+        var os   = Os(Processes((1, 0, "explorer"), (100, 1, "chrome"), (self, 100, "testhost")));
+
+        var plan = Plan(State(new[] { "process:chrome" }), new[] { new SlotBinding(true, false, TargetProcessId: 300) }, os);
+
+        Assert.True(plan.IsEmpty);
+    }
+
+    [Fact]
+    public void AppThatStartedMixion_IsReboundToItsNewAudioProcess()
+    {
+        var self = Environment.ProcessId;
+        var os   = Os(
+            Processes((1, 0, "explorer"), (100, 1, "chrome"), (self, 100, "testhost"), (400, 100, "chrome")),
+            audio: new[] { new AudioProcess(SessionProcessId: 400, RootProcessId: 400, ProcessName: "chrome") });
+
+        var plan = Plan(State(new[] { "process:chrome" }), new[] { new SlotBinding(true, false, TargetProcessId: 300) }, os);
+
+        Assert.Equal(new[] { new SlotRebind(0, new SourceTarget.App("chrome", 400)) }, plan.InputRebinds);
+    }
+
+    [Fact]
     public void AppThatIsStillClosed_NeedsNothing()
     {
         var plan = Plan(State(new[] { "process:chrome" }), new[] { Unbound }, Os(Processes((1, 0, "explorer"))));
