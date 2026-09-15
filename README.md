@@ -62,6 +62,8 @@ Single-process model. The .NET 8 host runs the audio engine, an HTTP server (Kes
 Mixion\
 ├── README.md                       # this file
 ├── CHANGELOG.md                    # user-facing changes per release (feeds the GitHub release notes)
+├── CLAUDE.md                       # project notes for Claude Code: architecture rules, commands
+├── .claude\                        # Claude Code skills (verify, add-rpc, diagnose, release) + agents (engine / FE reviewers)
 ├── .github\workflows\release.yml   # tag v* → build, test, publish a GitHub release with Mixion.exe
 ├── build.ps1                       # one-shot build script (-Mode portable | minimal, -Version)
 ├── icon.png / icon - no bg.png     # source artwork for the app icon
