@@ -1,4 +1,4 @@
-using System.Reflection;
+using Mixion.Host.Diagnostics;
 
 namespace Mixion.Host.Ipc.Handlers;
 
@@ -10,16 +10,13 @@ namespace Mixion.Host.Ipc.Handlers;
 /// </summary>
 public static class SystemHandlers
 {
-    private static readonly string Version =
-        Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
-
     public static void Register(JsonRpcDispatcher dispatcher)
     {
         dispatcher.Register("ping", (_, _, _) => Task.FromResult<object?>(new
         {
             ok = true,
             ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            version = Version,
+            version = AppVersion.Current,
         }));
     }
 }

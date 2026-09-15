@@ -80,7 +80,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon = new NotifyIcon
         {
             Icon             = LoadTrayIcon(),
-            Text             = "Mixion",
+            Text             = $"Mixion v{AppVersion.Current}",
             ContextMenuStrip = _menu,
             Visible          = true,
         };

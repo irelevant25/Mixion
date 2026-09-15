@@ -25,9 +25,12 @@
   .NET build configuration. Release (default) or Debug.
 
 .PARAMETER Version
-  Version to stamp into Mixion.exe (file, product and assembly version), e.g.
-  1.2.0 or 1.3.0-beta.1. Local builds can leave it out; the release workflow
-  passes the version from the tag.
+  Version to stamp into Mixion.exe (file, product and assembly version, and
+  what the UI shows), e.g. 1.2.0 or 1.3.0-beta.1. The release workflow passes
+  the version from the tag. Left out, it comes from the git tags: exactly at a
+  v* tag with no local changes, that tag's version (1.2.0); otherwise
+  `git describe` style, e.g. 1.2.0-3-gabc1234 for three commits after v1.2.0,
+  with -dirty appended when there are uncommitted changes.
 
 .EXAMPLE
   .\build.ps1
@@ -78,6 +81,27 @@ function Require-Tool([string]$name) {
     }
 }
 
+# "v1.2.0-0-ga4994b2" is exactly the tagged commit → "1.2.0". Anything else —
+# commits after the tag, or "-dirty" for uncommitted changes — keeps the
+# describe form without the v, e.g. "1.2.0-3-gabc1234" (a valid SemVer).
+function ConvertFrom-GitDescribe([string]$described) {
+    if ($described -notmatch '^v(?<tag>\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)-(?<height>\d+)-(?<rest>g[0-9a-f]+(-dirty)?)$') {
+        return $null
+    }
+    if ($Matches['height'] -eq '0' -and $Matches['rest'] -notlike '*-dirty') { return $Matches['tag'] }
+    return "$($Matches['tag'])-$($Matches['height'])-$($Matches['rest'])"
+}
+
+function Get-VersionFromGit {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
+    # git reports "no names found" on stderr when there is no tag; that isn't an error here.
+    $ErrorActionPreference = 'Continue'
+    $described = & git -C $root describe --tags --match 'v[0-9]*' --long --dirty 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $described) { return $null }
+    $text = ([string]$described).Trim()
+    return ConvertFrom-GitDescribe $text
+}
+
 # -----------------------------------------------------------------------------
 # 1. Prerequisites
 # -----------------------------------------------------------------------------
@@ -88,6 +112,14 @@ Require-Tool npm
 Write-Host "    dotnet $((dotnet --version).Trim())"
 Write-Host "    node   $((node --version).Trim())"
 Write-Host "    npm    $((npm --version).Trim())"
+
+$resolvedVersion = if ($Version) { $Version } else { Get-VersionFromGit }
+$versionSource   = if ($Version) { '-Version' } else { 'git tags' }
+if (-not $resolvedVersion) {
+    $resolvedVersion = '0.0.0-dev'
+    $versionSource   = 'no v* tag found; pass -Version to set one'
+}
+Write-Host "    Mixion $resolvedVersion ($versionSource)"
 
 if (-not (Test-Path $bePath)) { throw "Backend project not found at $bePath" }
 if (-not (Test-Path $ngPath)) { throw "Angular project not found at $ngPath" }
@@ -143,16 +175,13 @@ Write-Host "    Embedded UI bundle: $bundleSize MB"
 # -----------------------------------------------------------------------------
 # 5. Publish .NET host
 # -----------------------------------------------------------------------------
-$versionLabel = if ($Version) { ", version $Version" } else { '' }
+$versionLabel = ", version $resolvedVersion"
 Step "Publishing .NET host (mode: $Mode, configuration: $Configuration$versionLabel)"
 if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
 
 $selfContained = if ($Mode -eq 'portable') { 'true' } else { 'false' }
 
-# -p:Version sets the file, product and assembly versions together.
-$versionArgs = @()
-if ($Version) { $versionArgs += "-p:Version=$Version" }
-
+# -p:Version sets the file, product, assembly and informational versions together.
 & dotnet publish $bePath `
     -c $Configuration `
     -r win-x64 `
@@ -161,8 +190,8 @@ if ($Version) { $versionArgs += "-p:Version=$Version" }
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:DebugType=embedded `
     -p:EnableCompressionInSingleFile=true `
-    -o $publishDir `
-    @versionArgs
+    -p:Version=$resolvedVersion `
+    -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 
 $producedExe = Join-Path $publishDir 'Mixion.exe'

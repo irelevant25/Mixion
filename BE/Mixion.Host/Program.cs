@@ -41,7 +41,7 @@ internal static class Program
         CrashLog.Install();
         CrashLog.Write(
             "INFO",
-            $"Host starting (pid {Environment.ProcessId}); raw args=[{string.Join(' ', args)}]; "
+            $"Host starting (pid {Environment.ProcessId}, version {AppVersion.Current}); raw args=[{string.Join(' ', args)}]; "
             + $"parsed port={(cli.Port?.ToString() ?? "<remembered or random>")} noBrowser={cli.NoBrowser} "
             + $"skipDriverCheck={cli.SkipDriverCheck}",
             null);

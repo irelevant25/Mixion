@@ -18,7 +18,7 @@ Code is the source of truth. `README.md`, `BE/README.md` and `FE/README.md` are 
 | `FE/angular/src/app/core/` | `IpcService`, `MixerStateStore`, `SlotsStore`, `SessionService`, `HostLifecycleService`, preset services |
 | `FE/angular/src/app/features/` | Channel strips + slot picker, processing (EQ/comp/gate/pan), presets, signal flow, audio settings |
 | `FE/angular/src/app/shell/` | Connection banner, error page, retired-tab screen |
-| `build.ps1` | Production build → `output/Mixion.exe` (git-ignored); `-Version` stamps the exe |
+| `build.ps1` | Production build → `output/Mixion.exe` (git-ignored). Version: `-Version`, else from git tags (`1.2.0` exactly at a clean tag, `1.2.0-3-gabc1234[-dirty]` after it); `AppVersion` reports it to `/api/health`, `ping`, the log and the tray |
 | `.github/workflows/release.yml` | Tag `v*` → build, test, GitHub release with `Mixion.exe` and notes from `CHANGELOG.md` |
 | `CHANGELOG.md` | User-facing changes per version; `## [Unreleased]` collects what's coming |
 

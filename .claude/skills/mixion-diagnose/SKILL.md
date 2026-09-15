@@ -17,7 +17,7 @@ Start from evidence: the log first, then settings and the live state, then the c
 | Port | `%LOCALAPPDATA%\Mixion\host-port.txt`: the port the host reuses (`--port N` overrides it and isn't saved) |
 | CLI | `--port N`, `--no-browser`, `--no-driver-check` (development only) |
 
-Each line looks like `2026-09-14T19:18:21.657+02:00 INFO [DeviceWatcher] message` (lines written straight to the crash log have no category). Every start begins with `Host starting (pid …); raw args=[…]`, so split a multi-run log there. Find the lines around the user's report — for example with the Grep tool on the logs folder, or `Get-Content <log> -Tail 300` in PowerShell.
+Each line looks like `2026-09-14T19:18:21.657+02:00 INFO [DeviceWatcher] message` (lines written straight to the crash log have no category). Every start begins with `Host starting (pid …, version …); raw args=[…]`, so split a multi-run log there and check which build was running. Find the lines around the user's report — for example with the Grep tool on the logs folder, or `Get-Content <log> -Tail 300` in PowerShell.
 
 ## What the log says
 

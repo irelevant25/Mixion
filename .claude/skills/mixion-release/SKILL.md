@@ -40,4 +40,5 @@ Committing, tagging and pushing are outward-facing: confirm with the user before
 - **A test fails only on the runner**: a test that needs real audio hardware gets `[Trait("Requires", "AudioDevices")]`; anything else is a real failure to fix, not to filter.
 - **The published notes are wrong**: edit the release on GitHub, and fix `CHANGELOG.md` on `main` so the history stays right. Re-running the workflow from the same tag also rewrites the notes, from the `CHANGELOG.md` in that tagged commit.
 - **The published build is broken**: never move a published tag — people may already have that exe. Fix it and release a patch version.
+- **The UI shows a version like `1.2.0-3-gabc1234` or `-dirty`**: that exe wasn't built from the tag itself — `build.ps1` without `-Version` describes the git state (commits after the tag, uncommitted changes). Expected for local builds; a build of the clean tag, or the release workflow (which passes `-Version`), shows `1.2.0`.
 - **Changelog section missing** (warning in the run): the release is published with commits only. Add the section in the next release, or edit the release on GitHub.

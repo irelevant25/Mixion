@@ -151,6 +151,8 @@ The script:
 
 The Angular files travel inside the assembly as embedded resources (via `ManifestEmbeddedFileProvider`), so `output/Mixion.exe` is genuinely a single file with no companion `wwwroot/` folder.
 
+The version the exe reports (in the UI, the tray tooltip and `/api/health`) is `-Version` if given, otherwise it comes from the git tags: a build of exactly a release tag with no local changes reports that release, e.g. `1.2.0`; later work reports `git describe` style, e.g. `1.2.0-3-gabc1234` for three commits after v1.2.0 (`-dirty` when there are uncommitted changes).
+
 ### Releases
 
 GitHub builds releases with [.github/workflows/release.yml](.github/workflows/release.yml). Pushing a version tag starts it:

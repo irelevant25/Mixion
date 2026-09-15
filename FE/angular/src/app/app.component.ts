@@ -52,6 +52,12 @@ export class AppComponent {
     return t ? `${t.slice(0, 8)}…${t.slice(-4)}` : '—';
   });
 
+  /** The host's version as tagged, e.g. v1.2.0 — or v1.2.0-3-gabc1234 for a build with later changes. */
+  protected readonly hostVersion = computed(() => {
+    const version = this.health()?.version;
+    return version ? `v${version}` : '—';
+  });
+
   protected readonly errorDetail = computed(() => {
     const err = this.session.error();
     if (!err) return null;
