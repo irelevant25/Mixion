@@ -20,7 +20,9 @@
             <input
               type="radio"
               [name]="'device-' + bus() + '-' + slotId()"
+              value=""
               [checked]="!selectedDeviceId()"
+              [disabled]="busy()"
               (change)="onSelect(null)" />
             <span class="name dim">— Not assigned —</span>
           </label>
@@ -31,8 +33,9 @@
               <input
                 type="radio"
                 [name]="'device-' + bus() + '-' + slotId()"
+                [value]="d.id"
                 [checked]="selectedDeviceId() === d.id"
-                [disabled]="isUsedElsewhere(d.id)"
+                [disabled]="busy() || isUsedElsewhere(d.id)"
                 (change)="onSelect(d.id)" />
               <app-device-icon class="row-icon" [bus]="bus()" [channelId]="d.id" />
               <span class="name" [title]="d.name">{{ d.name }}</span>
@@ -46,7 +49,7 @@
                   type="button"
                   class="row-action"
                   (click)="$event.preventDefault(); $event.stopPropagation(); onRemoveProcess(d.id)"
-                  [disabled]="removingId() === d.id"
+                  [disabled]="busy()"
                   [attr.aria-label]="'Detach ' + d.name + ' from the mixer'"
                   title="Detach this app — frees its loopback. The app keeps playing audio normally to its own output device.">
                   {{ removingId() === d.id ? '…' : '×' }}
@@ -67,13 +70,13 @@
           type="button"
           class="rescan"
           (click)="onRefresh()"
-          [disabled]="refreshing()"
+          [disabled]="busy()"
           title="Last resort — this list updates by itself. Rescanning re-opens every device and app, with a brief audio dropout."
           [attr.aria-label]="'Rescan all ' + bus() + ' devices and apps'">
           {{ refreshing() ? 'Rescanning…' : 'Something missing? Rescan' }}
         </button>
         <span class="actions">
-          <button type="button" class="danger" (click)="onRemove()">Remove slot</button>
+          <button type="button" class="danger" (click)="onRemove()" [disabled]="busy()">Remove slot</button>
         </span>
       </footer>
     </dialog>

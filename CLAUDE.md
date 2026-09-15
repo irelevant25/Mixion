@@ -88,6 +88,7 @@ Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`: `build.ps1 -Version
 - The host prefers its previous port (`host-port.txt`, skipped with `--port`) and serves `index.html` with `Cache-Control: no-cache`.
 - Kestrel is up before the engine: `/api/session` and `getState` wait for `EngineHost.CompleteStartup()` (called after the last-preset auto-load, at most 15 s), so an early page never hydrates an empty mixer.
 - FE applies `stateChanged` with `MixerStateStore.applyTopology`: the host owns the channel list, names and availability; the tab keeps gain/mute/solo/pan/DSP/routes of channels it already knows (a push can race the tab's own RPCs).
+- Slots exist only in the UI (`SlotsStore`); the host knows channels and routes. Components change slots through `SlotActionsService`, which first switches off a channel's routes when it leaves its last slot (removed or given another device) — otherwise audio keeps flowing through a channel nobody can see or unroute.
 
 ## Conventions
 - C#: file-scoped namespaces, aligned assignments, XML doc comments that explain *why*. `BE-0xx` / `FE-0xx` ids refer to the task tables in the READMEs.

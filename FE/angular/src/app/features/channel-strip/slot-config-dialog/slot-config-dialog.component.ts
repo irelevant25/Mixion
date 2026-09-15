@@ -11,6 +11,7 @@ import {
 
 import { ChannelBus, MixerStateDto, MixerStateStore } from '../../../core/mixer-state.store';
 import { IpcError, IpcService } from '../../../core/ipc.service';
+import { SlotActionsService } from '../../../core/slot-actions.service';
 import { slotLabel, SlotsStore } from '../../../core/slots.store';
 import { DeviceIconComponent } from '../device-icon/device-icon.component';
 
@@ -43,9 +44,10 @@ import { DeviceIconComponent } from '../device-icon/device-icon.component';
   styleUrls: ['./slot-config-dialog.component.css'],
 })
 export class SlotConfigDialogComponent {
-  private readonly slots = inject(SlotsStore);
-  private readonly mixer = inject(MixerStateStore);
-  private readonly ipc   = inject(IpcService);
+  private readonly slots       = inject(SlotsStore);
+  private readonly slotActions = inject(SlotActionsService);
+  private readonly mixer       = inject(MixerStateStore);
+  private readonly ipc         = inject(IpcService);
   private readonly dlg = viewChild.required<ElementRef<HTMLDialogElement>>('dlg');
 
   readonly bus    = input.required<ChannelBus>();
@@ -64,6 +66,14 @@ export class SlotConfigDialogComponent {
   protected readonly refreshing  = signal(false);
   protected readonly refreshError = signal<string | null>(null);
   protected readonly removingId   = signal<string | null>(null);
+  /** A slot change is switching routes off on the host. */
+  protected readonly applying     = signal(false);
+  /**
+   * A request from this dialog is in flight. Everything else waits, so a slot
+   * change can't interleave with a Rescan or an app removal that renumbers the
+   * host's channels underneath it.
+   */
+  protected readonly busy = computed(() => this.applying() || this.refreshing() || this.removingId() !== null);
 
   /**
    * True when the channel id encodes a per-process loopback. Only those get
@@ -118,14 +128,12 @@ export class SlotConfigDialogComponent {
     return '';
   }
 
-  protected onSelect(deviceId: string | null): void {
-    this.slots.assignDevice(this.bus(), this.slotId(), deviceId);
-    this.close();
+  protected async onSelect(deviceId: string | null): Promise<void> {
+    await this.applySlotChange(() => this.slotActions.assignDevice(this.bus(), this.slotId(), deviceId));
   }
 
-  protected onRemove(): void {
-    this.slots.removeSlot(this.bus(), this.slotId());
-    this.close();
+  protected async onRemove(): Promise<void> {
+    await this.applySlotChange(() => this.slotActions.removeSlot(this.bus(), this.slotId()));
   }
 
   protected onNativeClose(): void {
@@ -140,7 +148,7 @@ export class SlotConfigDialogComponent {
    * "Not assigned" anyway.
    */
   protected async onRemoveProcess(channelId: string): Promise<void> {
-    if (this.removingId() !== null) return;
+    if (this.busy()) return;
     this.removingId.set(channelId);
     this.refreshError.set(null);
     try {
@@ -148,8 +156,8 @@ export class SlotConfigDialogComponent {
       this.mixer.replace(next);
       // Unbind any slots that were pointing at this id (in either bus, just
       // in case) so they show as empty rather than ghost-bound.
-      for (const slot of this.slots.inputs())  if (slot.deviceId === channelId) this.slots.assignDevice('input',  slot.id, null);
-      for (const slot of this.slots.outputs()) if (slot.deviceId === channelId) this.slots.assignDevice('output', slot.id, null);
+      for (const slot of this.slots.inputs())  if (slot.deviceId === channelId) await this.slotActions.assignDevice('input',  slot.id, null);
+      for (const slot of this.slots.outputs()) if (slot.deviceId === channelId) await this.slotActions.assignDevice('output', slot.id, null);
     } catch (err) {
       this.refreshError.set(this.formatError(err));
     } finally {
@@ -164,7 +172,7 @@ export class SlotConfigDialogComponent {
    * fail, but for an explicit rescan that's an acceptable trade.
    */
   protected async onRefresh(): Promise<void> {
-    if (this.refreshing()) return;
+    if (this.busy()) return;
     this.refreshing.set(true);
     this.refreshError.set(null);
     try {
@@ -174,6 +182,38 @@ export class SlotConfigDialogComponent {
       this.refreshError.set(this.formatError(err));
     } finally {
       this.refreshing.set(false);
+    }
+  }
+
+  /**
+   * Run a slot change and close the dialog when it's done. The change may first
+   * switch off the routes of a device leaving its last slot; if the host
+   * refuses, the dialog stays open with the error and the slot is unchanged.
+   */
+  private async applySlotChange(change: () => Promise<void>): Promise<void> {
+    if (this.busy()) return;
+    this.applying.set(true);
+    this.refreshError.set(null);
+    try {
+      await change();
+      this.close();
+    } catch (err) {
+      this.refreshError.set(this.formatError(err));
+      this.syncRadios();
+    } finally {
+      this.applying.set(false);
+    }
+  }
+
+  /**
+   * Point the radios back at the slot's real device. The browser already moved
+   * the check to the clicked option, and Angular only rewrites `checked` when
+   * the bound value changes — which it didn't, as the change failed.
+   */
+  private syncRadios(): void {
+    const selected = this.selectedDeviceId();
+    for (const radio of this.dlg().nativeElement.querySelectorAll<HTMLInputElement>('input[type="radio"]')) {
+      radio.checked = (radio.value || null) === selected;
     }
   }
 

@@ -16,6 +16,7 @@ Check each change against these rules and report only real problems:
 **Talking to the host (`core/ipc.service.ts`)**
 - Calls go through `ipc.call<T>(method, params)`; the method name and the param/result shapes match the backend handler in `BE/Mixion.Host/Ipc/Handlers` and the RPC contract in `BE/README.md`.
 - A UI-driven change patches the store first (`MixerStateStore.patchChannel` / `setRoute`), sends the RPC, and restores the previous value in `catch`, showing the error (see `route-buttons`).
+- Slot layout changes go through `SlotActionsService`, which switches off a channel's routes when it leaves its last slot; components don't call `SlotsStore.removeSlot` / `assignDevice` directly, or a removed slot leaves audio playing on a route nobody can see.
 - Continuous controls (sliders, curve drags) throttle what they send and cancel the throttle on destroy (see `pan-control`, `gate`, `compressor`).
 - Host pushes arrive on `ipc.notifications$`, handled in `app.config.ts`: `stateChanged` → `store.applyTopology` (never `replace`, which would drop edits the tab has in flight), `sessionChanged` → `rehydrate()`. A new push needs its backend broadcast and docs too (the `mixion-add-rpc` skill).
 
