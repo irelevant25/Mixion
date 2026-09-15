@@ -6,6 +6,18 @@ Add entries under **Unreleased** as changes land. To release, rename that headin
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-15
+
+### Added
+
+- The tray icon's tooltip shows the version.
+
+### Fixed
+
+- The UI showed the version as `1.0.0.0` (or `1.2.0.0`) instead of the release version. It now shows `v1.2.1`-style versions; a build with changes after a release shows them too, like `v1.2.1-3-gabc1234`.
+- Removing a slot, or giving it another device, left that channel's routes on, so audio kept playing where you could no longer see or switch it off. The routes are now switched off with it.
+- An app such as Chrome was missing from the input list when Mixion had been opened from that app, for example from Chrome's downloads.
+
 ## [1.2.0] - 2026-09-15
 
 ### Added
