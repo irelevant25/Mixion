@@ -19,7 +19,7 @@ Code is the source of truth. `README.md`, `BE/README.md` and `FE/README.md` are 
 | `FE/angular/src/app/features/` | Channel strips + slot picker, processing (EQ/comp/gate/pan), presets, signal flow, audio settings |
 | `FE/angular/src/app/shell/` | Connection banner, error page, retired-tab screen |
 | `build.ps1` | Production build → `output/Mixion.exe` (git-ignored). Version: `-Version`, else from git tags (`1.2.0` exactly at a clean tag, `1.2.0-3-gabc1234[-dirty]` after it); `AppVersion` reports it to `/api/health`, `ping`, the log and the tray |
-| `.github/workflows/release.yml` | Tag `v*` → build, test, GitHub release with `Mixion.exe` and notes from `CHANGELOG.md` |
+| `.github/workflows/release.yml` | Tag `v*` → test, build, GitHub release with `Mixion.exe` and notes from `CHANGELOG.md` |
 | `CHANGELOG.md` | User-facing changes per version; `## [Unreleased]` collects what's coming |
 
 Runtime data: `%LOCALAPPDATA%\Mixion\` — `presets\`, `audio-settings.json`, `host-port.txt`, `logs\`.
@@ -46,7 +46,7 @@ Skills and agents for this repo:
 
 ## Releases
 
-Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`: `build.ps1 -Version`, backend tests except `Requires=AudioDevices`, frontend tests, then a GitHub release with `Mixion.exe` and the version's `CHANGELOG.md` section as notes. Record user-visible changes under `## [Unreleased]` in `CHANGELOG.md` as they land. Details: `mixion-release`.
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`: backend tests except `Requires=AudioDevices`, frontend tests, `build.ps1 -Version`, then a GitHub release with `Mixion.exe` and the version's `CHANGELOG.md` section as notes. Record user-visible changes under `## [Unreleased]` in `CHANGELOG.md` as they land. Details: `mixion-release`.
 
 ## Invariants
 

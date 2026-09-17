@@ -64,7 +64,7 @@ Mixion\
 ├── CHANGELOG.md                    # user-facing changes per release (feeds the GitHub release notes)
 ├── CLAUDE.md                       # project notes for Claude Code: architecture rules, commands
 ├── .claude\                        # Claude Code skills (verify, add-rpc, diagnose, release) + agents (engine / FE reviewers)
-├── .github\workflows\release.yml   # tag v* → build, test, publish a GitHub release with Mixion.exe
+├── .github\workflows\release.yml   # tag v* → test, build, publish a GitHub release with Mixion.exe
 ├── build.ps1                       # one-shot build script (-Mode portable | minimal, -Version)
 ├── icon.png / icon - no bg.png     # source artwork for the app icon
 ├── BE\
@@ -159,10 +159,10 @@ GitHub builds releases with [.github/workflows/release.yml](.github/workflows/re
 
 ```powershell
 git tag v1.0.0
-git push irelevant25 v1.0.0
+git push origin v1.0.0
 ```
 
-It can also be started from GitHub (**Actions → Release → Run workflow**, entering the version). The workflow runs `build.ps1 -Version <version>` and the backend and frontend tests, then creates the GitHub release with `Mixion.exe` attached. The release notes are that version's section of [CHANGELOG.md](CHANGELOG.md), followed by the commits since the previous tag. Versions with a suffix (`1.1.0-beta.1`) are marked as prereleases.
+It can also be started from GitHub (**Actions → Release → Run workflow**, entering the version). The workflow runs the backend and frontend tests, then `build.ps1 -Version <version>`, then creates the GitHub release with `Mixion.exe` attached. The release notes are that version's section of [CHANGELOG.md](CHANGELOG.md), followed by the commits since the previous tag. Versions with a suffix (`1.1.0-beta.1`) are marked as prereleases.
 
 ---
 

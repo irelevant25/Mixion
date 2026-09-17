@@ -2,7 +2,7 @@
 #
 # Start it by pushing a version tag:
 #   git tag v1.2.0
-#   git push irelevant25 v1.2.0
+#   git push origin v1.2.0
 # or on GitHub: Actions → Release → Run workflow, entering the version (the tag
 # is created on the branch the workflow runs from).
 #
@@ -80,21 +80,28 @@ jobs:
           cache: npm
           cache-dependency-path: FE/angular/package-lock.json
 
-      - name: Build Mixion.exe
-        shell: pwsh
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: ./build.ps1 -Mode portable -Version $env:VERSION
-
+      # Tests run before the build, so a failing test stops the run without
+      # spending the runner time on a production build and single-file publish.
       - name: Test backend
         shell: pwsh
         # GitHub's runners have no audio devices, so tests that need them are skipped.
         run: dotnet test BE/Mixion.Host.Tests/Mixion.Host.Tests.csproj --filter "Requires!=AudioDevices"
 
+      - name: Install frontend dependencies
+        shell: pwsh
+        working-directory: FE/angular
+        run: npm ci
+
       - name: Test frontend
         shell: pwsh
         working-directory: FE/angular
         run: npx ng test --watch=false --browsers=ChromeHeadless
+
+      - name: Build Mixion.exe
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./build.ps1 -Mode portable -Version $env:VERSION
 
       - name: Write release notes
         shell: pwsh
