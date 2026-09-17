@@ -17,7 +17,9 @@ BE/
 │   ├── Web/
 │   │   ├── HttpServer.cs             # Kestrel host configuration (listen on 127.0.0.1:<free port>)
 │   │   ├── StaticFiles.cs            # ManifestEmbeddedFileProvider wiring + SPA fallback to /index.html
-│   │   ├── SessionEndpoint.cs        # GET /api/session — returns {token, csrf, mixerStateInit}
+│   │   ├── SessionEndpoint.cs        # GET /api/session — returns {token, mixerStateInit, currentPreset, slots}
+│   │   ├── SessionStore.cs           # /ws tokens: random, single-use, expire after 60 s
+│   │   ├── LoopbackRequestGuard.cs   # 403 unless Host and Origin are loopback (foreign pages, DNS rebinding)
 │   │   ├── HealthEndpoint.cs         # GET /api/health — diagnostics
 │   │   ├── PortPreference.cs         # remembers the last listen port so the UI keeps its origin across restarts
 │   │   └── WebSocketEndpoint.cs      # GET /ws — upgrade, validate token, dispatch; hostShutdown + close 1001 on exit
@@ -250,7 +252,9 @@ The host exposes a tiny HTTP API plus the Angular SPA:
 | GET | `/{anything else}` | SPA fallback → `index.html` (Angular handles routing) |
 | GET | `/api/session` | Returns `{ token, mixerStateInit }`. Token is required on `/ws`. |
 | GET | `/api/health` | `{ ok: true, version, uptimeSeconds }` |
-| GET | `/ws` | WebSocket upgrade. Requires `?token=<from /api/session>`. |
+| GET | `/ws` | WebSocket upgrade. Requires `?token=<from /api/session>`; each token works once, within 60 s. |
+
+`LoopbackRequestGuard` answers every request with 403 unless its `Host` is loopback (`localhost`, `127.0.0.1`, `[::1]`) and its `Origin`, when present, is a loopback origin. That keeps browser pages out, including cross-origin WebSockets and DNS rebinding. It doesn't keep out local processes, which can call `/api/session` just as the UI does. See *Security model* in the root README.
 
 `/api/session` returns the auth token plus the initial mixer state so the SPA can hydrate without a round-trip:
 
@@ -261,7 +265,7 @@ The host exposes a tiny HTTP API plus the Angular SPA:
 }
 ```
 
-The token is held in memory; it changes on every host restart. The SPA stores it in memory only — never in `localStorage`.
+The token is 32 random bytes held in memory, so a host restart revokes every token. It works once and expires 60 s after issue, so the SPA fetches a fresh one before every connect (first load and each reconnect). The SPA keeps it in memory only, never in `localStorage`.
 
 Kestrel serves requests before the audio engine is up, so `/api/session` and the `getState` RPC wait (at most 15 s) until the engine has started and the last preset is applied — a page that loads early doesn't render an empty mixer. `index.html` is served with `Cache-Control: no-cache` because the host reuses its port across restarts.
 

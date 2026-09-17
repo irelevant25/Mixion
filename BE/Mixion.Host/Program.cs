@@ -191,6 +191,9 @@ internal static class Program
         // apps coming and going without a refresh.
         engineHost.TopologyChanged += state => hub.Broadcast("stateChanged", state.ToDto());
 
+        // Before anything that answers: /api/session and /ws must never serve a
+        // foreign page (cross-origin WebSocket, DNS rebinding).
+        app.UseLoopbackRequestGuard();
         app.UseWebSockets();
 
         app.MapHealth();

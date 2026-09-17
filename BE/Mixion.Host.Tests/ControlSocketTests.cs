@@ -55,6 +55,51 @@ public class ControlSocketTests
         Assert.Contains("\"params\":{\"inputs\":[]}", message);
     }
 
+    [Fact]
+    public async Task Upgrade_FromTheUiOrigin_IsAccepted()
+    {
+        await using var host = await TestHost.StartAsync();
+
+        using var client = await host.ConnectAsync(origin: "http://localhost:4200");
+
+        Assert.Equal(WebSocketState.Open, client.State);
+    }
+
+    [Fact]
+    public async Task Upgrade_FromAForeignOrigin_IsRefusedEvenWithAValidToken()
+    {
+        await using var host = await TestHost.StartAsync();
+
+        var status = await host.RefusedUpgradeStatusAsync(host.IssueToken(), origin: "https://attacker.example");
+
+        Assert.Equal(403, status);
+    }
+
+    [Fact]
+    public async Task Upgrade_WithAUsedToken_IsRefused()
+    {
+        await using var host = await TestHost.StartAsync();
+        var token = host.IssueToken();
+        using var first = await host.ConnectAsync(token);
+
+        var status = await host.RefusedUpgradeStatusAsync(token);
+
+        Assert.Equal(401, status);
+    }
+
+    [Fact]
+    public async Task Request_WithARebindedHostName_IsRefused()
+    {
+        await using var host = await TestHost.StartAsync();
+        using var http    = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{host.Url}/ws");
+        request.Headers.Host = "attacker.example";
+
+        using var response = await http.SendAsync(request, Timeout(5));
+
+        Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     private static CancellationToken Timeout(int seconds)
         => new CancellationTokenSource(TimeSpan.FromSeconds(seconds)).Token;
 
@@ -106,6 +151,7 @@ public class ControlSocketTests
             builder.Services.AddSingleton(_ => new JsonRpcDispatcher(NullLogger.Instance));
 
             var app = builder.Build();
+            app.UseLoopbackRequestGuard();
             app.UseWebSockets();
             app.MapControlSocket();
             await app.StartAsync();
@@ -113,11 +159,30 @@ public class ControlSocketTests
             return new TestHost(app, HttpServer.ResolveBoundUrl(app.Services.GetRequiredService<IServer>()));
         }
 
-        public async Task<ClientWebSocket> ConnectAsync()
+        public string IssueToken() => App.Services.GetRequiredService<SessionStore>().Issue();
+
+        public async Task<ClientWebSocket> ConnectAsync(string? token = null, string? origin = null)
         {
-            var token  = App.Services.GetRequiredService<SessionStore>().Issue();
+            var client = CreateClient(origin);
+            await client.ConnectAsync(SocketUri(token ?? IssueToken()), Timeout(5));
+            return client;
+        }
+
+        /// <summary>Attempts an upgrade that must fail, and returns the HTTP status the host answered with.</summary>
+        public async Task<int> RefusedUpgradeStatusAsync(string token, string? origin = null)
+        {
+            using var client = CreateClient(origin);
+            client.Options.CollectHttpResponseDetails = true;
+            await Assert.ThrowsAsync<WebSocketException>(() => client.ConnectAsync(SocketUri(token), Timeout(5)));
+            return (int)client.HttpStatusCode;
+        }
+
+        private Uri SocketUri(string token) => new($"{Url.Replace("http://", "ws://")}/ws?token={token}");
+
+        private static ClientWebSocket CreateClient(string? origin)
+        {
             var client = new ClientWebSocket();
-            await client.ConnectAsync(new Uri($"{Url.Replace("http://", "ws://")}/ws?token={token}"), Timeout(5));
+            if (origin is not null) client.Options.SetRequestHeader("Origin", origin);
             return client;
         }
 

@@ -50,7 +50,7 @@ Single-process model. The .NET 8 host runs the audio engine, an HTTP server (Kes
 | Static file delivery | **`ManifestEmbeddedFileProvider`** — Angular `dist/` embedded as resources in the host assembly | Single-file .exe contains the entire UI; no `wwwroot` next to the binary |
 | UI framework | **Angular 18+** (standalone components, signals) | User knows it well |
 | IPC | **WebSocket on same origin (`/ws`)**, JSON-RPC 2.0 (text) + binary telemetry frames | Single transport, simple, fast enough |
-| Auth | **HMAC token** issued by `GET /api/session`; required on WS connect | Prevents other local processes from connecting |
+| Access | **Loopback-only request guard** (`Host` and `Origin` must be localhost / 127.0.0.1) + a **single-use random token** from `GET /api/session`, required on WS connect | Keeps web pages out (cross-origin WebSockets, DNS rebinding). It does *not* keep out local processes — see [Security model](#security-model) |
 | Meters | **Canvas + requestAnimationFrame** | DOM/SVG can't sustain 16 meters at 60 fps without CD pressure |
 | Persistence | **JSON files** in `%LOCALAPPDATA%\Mixion\presets\` | Trivial, human-editable |
 
@@ -225,11 +225,24 @@ Each milestone is independently shippable to yourself. **Detailed tasks** for ea
 
 ---
 
+## Security model
+
+Mixion listens on `127.0.0.1` only, so the LAN can't reach it. That leaves two kinds of caller on the same machine:
+
+- **Web pages in the user's browser are kept out.** Any page can send requests to a local port, so the host checks each request explicitly:
+  - Every request must carry a loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`). A DNS-rebinding page (its own domain re-resolved to `127.0.0.1`) is same-origin with the host and could otherwise read `/api/session`. Its requests carry its own host name, so they get 403.
+  - A request with an `Origin` header must come from a loopback origin: the packaged UI, or `ng serve` on `localhost:4200`. WebSockets aren't bound by the same-origin policy, and browsers always send `Origin` on the upgrade, so a foreign page's `/ws` upgrade gets 403 even with a valid token.
+  - A plain cross-origin page can't read `/api/session` in any case, because the host sends no CORS headers.
+  - `/ws` needs a token from `/api/session`. A token is 32 random bytes, not an HMAC, so there is no key to leak, and a host restart revokes every token. Each token works once and expires after 60 s. The UI fetches a fresh one before every connect, so a token that shows up in the request log has already been used.
+- **Other local processes are not kept out.** Any process running as the user can call `GET /api/session`, get a token and control the mixer. That's by design: such a process can already read the same files, inject into the browser or change Windows audio settings directly, so a secret that only exists on this machine wouldn't stop it.
+
+---
+
 ## Critical implementation notes
 
 - **MMCSS is not optional.** Without `AvSetMmThreadCharacteristics("Pro Audio")` on the audio threads, you'll get glitches under any system load. One P/Invoke call.
 - **Zero allocation on the audio path.** Pre-allocate every `float[]` at startup. Verify with BenchmarkDotNet's memory diagnoser before each release. The DSP chain (gate → EQ → compressor → pan) and per-process loopback ring buffers all comply.
-- **Pin Kestrel to `127.0.0.1`.** Never bind to `0.0.0.0` or any public interface — this app should never be reachable from the LAN. HMAC-token-on-WS gives an extra layer.
+- **Pin Kestrel to `127.0.0.1`.** Never bind to `0.0.0.0` or any public interface — this app should never be reachable from the LAN. The request guard and the WS token are what keep web pages out ([Security model](#security-model)).
 - **HTTPS is not used.** The whole stack is loopback-only on the same machine; certificates would just add friction. Browsers permit unencrypted WebSockets to `127.0.0.1` without warnings.
 - **Angular bundle goes inside the assembly.** `ManifestEmbeddedFileProvider` keeps the .exe truly portable. `dotnet publish` settings: `<GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>` and `<EmbeddedResource Include="wwwroot\**\*" />`.
 - **Sample-rate mismatch is the #1 WASAPI bug source.** Detect on start; refuse with a clear error rather than silently glitching. Channels with no live device (unplugged mic, dead process loopback) survive in `MixerState` with `Available = false` and contribute silence — they don't take down the engine.

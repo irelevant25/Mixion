@@ -35,6 +35,7 @@ Each line looks like `2026-09-14T19:18:21.657+02:00 INFO [DeviceWatcher] message
 | `Device/app reconciliation failed; retrying on the next pass.` | One occurrence is harmless; repeated ones are a bug — read the stack trace. |
 | `Auto-loaded last preset '{Name}'` · `Preset '{Name}' references N device(s) not currently present.` | Missing devices keep their slots and reconnect when they appear. |
 | `WS open  remote=…` / `WS close` | A UI tab connected / disconnected. No `WS open` after `listening at` means no tab reached this host. |
+| `Refused GET {Path} from host=… origin=…` | 403 from `LoopbackRequestGuard`: the request's `Host` wasn't `localhost` / `127.0.0.1` / `[::1]`, or its `Origin` wasn't a loopback origin. Expected for a foreign web page probing the port. If it's the user's own tab, they opened Mixion under another name (a hosts-file alias, the machine name); use `http://127.0.0.1:N`. |
 | `MixEngine loop crashed` · `Unhandled RPC exception in {Method}` · `FATAL` | Bugs. Collect the stack trace and the lines before it. |
 
 ## WASAPI HRESULTs

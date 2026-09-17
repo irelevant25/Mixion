@@ -6,6 +6,11 @@ Add entries under **Unreleased** as changes land. To release, rename that headin
 
 ## [Unreleased]
 
+### Security
+
+- Web pages open in your browser can no longer connect to Mixion. Mixion now accepts connections only from its own UI, which also blocks DNS rebinding. Before, an unguessable token was the only protection.
+- Connection tokens now work once and expire after a minute, so a token copied from the log can't be used.
+
 ## [1.2.1] - 2026-09-15
 
 ### Added

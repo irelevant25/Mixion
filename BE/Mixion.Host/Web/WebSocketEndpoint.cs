@@ -42,11 +42,12 @@ public static class WebSocketEndpoint
 
             var token = ctx.Request.Query["token"].ToString();
             var store = ctx.RequestServices.GetRequiredService<SessionStore>();
-            if (!store.IsValid(token))
+            if (!store.TryRedeem(token))
             {
-                // Refuse the upgrade entirely. We must NOT accept the socket
-                // and close it with 1008 — RFC says authn failures should
-                // happen as part of the upgrade, so the client sees a 401.
+                // Unknown, expired or already used. Refuse the upgrade entirely.
+                // We must NOT accept the socket and close it with 1008 — RFC
+                // says authn failures should happen as part of the upgrade, so
+                // the client sees a 401.
                 ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 await ctx.Response.WriteAsync("Invalid or missing token.");
                 return;
