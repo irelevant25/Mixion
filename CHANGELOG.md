@@ -6,6 +6,8 @@ Add entries under **Unreleased** as changes land. To release, rename that headin
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-17
+
 ### Added
 
 - Mixion is licensed under the [MIT License](https://github.com/irelevant25/Mixion/blob/main/LICENSE).
