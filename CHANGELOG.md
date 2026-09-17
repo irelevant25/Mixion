@@ -6,6 +6,10 @@ Add entries under **Unreleased** as changes land. To release, rename that headin
 
 ## [Unreleased]
 
+### Added
+
+- Mixion is licensed under the [MIT License](https://github.com/irelevant25/Mixion/blob/main/LICENSE).
+
 ### Security
 
 - Web pages open in your browser can no longer connect to Mixion. Mixion now accepts connections only from its own UI, which also blocks DNS rebinding. Before, an unguessable token was the only protection.

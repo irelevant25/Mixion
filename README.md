@@ -61,6 +61,7 @@ Single-process model. The .NET 8 host runs the audio engine, an HTTP server (Kes
 ```
 Mixion\
 ├── README.md                       # this file
+├── LICENSE                         # MIT
 ├── CHANGELOG.md                    # user-facing changes per release (feeds the GitHub release notes)
 ├── CLAUDE.md                       # project notes for Claude Code: architecture rules, commands
 ├── .claude\                        # Claude Code skills (verify, add-rpc, diagnose, release) + agents (engine / FE reviewers)
@@ -256,4 +257,4 @@ Mixion listens on `127.0.0.1` only, so the LAN can't reach it. That leaves two k
 
 ## License & status
 
-Personal project. Builds are published as [GitHub releases](https://github.com/irelevant25/Mixion/releases).
+Mixion is released under the [MIT License](LICENSE). Builds are published as [GitHub releases](https://github.com/irelevant25/Mixion/releases).
